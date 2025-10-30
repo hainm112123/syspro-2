@@ -14,6 +14,7 @@
 
 	// Use 'postCreateCommand' to run commands after the container is created.
 	// "postCreateCommand": "gcc -v",
+	"postCreateCommand": "sudo apt-get update && sudo apt-get install -y git-lfs && git lfs install",
 
 	// Configure tool-specific properties.
 	"customizations": {
