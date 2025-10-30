@@ -1,0 +1,48 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/cpp
+{
+	"name": "devcontainer",
+	"build": {
+		"dockerfile": "Dockerfile"
+	},
+
+	// Features to add to the dev container. More info: https://containers.dev/features.
+	// "features": {},
+
+	// Use 'forwardPorts' to make a list of ports inside the container available locally.
+	// "forwardPorts": [],
+
+	// Use 'postCreateCommand' to run commands after the container is created.
+	// "postCreateCommand": "gcc -v",
+
+	// Configure tool-specific properties.
+	"customizations": {
+		"vscode": {
+            "extensions": [
+                "ms-vscode.cpptools",
+				"ms-vscode.cpptools-extension-pack",
+				"ms-vscode.cmake-tools",
+				"twxs.cmake",
+				"xaver.clang-format",
+				"matepek.vscode-catch2-test-adapter",
+				"ms-azuretools.vscode-docker",
+				"github.vscode-github-actions"
+            ],
+            "settings": {
+                "autopep8.cwd": "${containerWorkspaceFolder}",
+                "editor.tabSize": 2,
+                "extensions.ignoreRecommendations": false,
+                "files.insertFinalNewline": true,
+                "git.autorefresh": true,
+                "git.enabled": true
+            }
+        }
+	}
+	
+	// "dockerComposeFile": "compose.yml",
+    // "service": "devcontainer",
+    // "workspaceFolder": "/workspaces/syspro-2"
+
+	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
+	// "remoteUser": "root"
+}
