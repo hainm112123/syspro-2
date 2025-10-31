@@ -17,17 +17,24 @@
 class ProcessMonitor {
   public:
     struct ProcessInfo {
-      pid_t pid;
-      int fd;
-      ProcessStat stat;
+      pid_t pid = -1;
+      int statFd = -1, statusFd = -1;
+      unsigned long long lastUTime = 0, lastSTime = 0, lastTotalTime = 0;
+      ProcessStat limit;
+      ProcessInfo() {}
+      ProcessInfo(ProcessStat _limit): limit(_limit) {}
     };
   private: 
     std::unordered_map<std::string, ProcessInfo> processes;
     int monitorInterval;
+    long ticksPerSec, pageSize;
   public:
     ProcessMonitor(const std::vector<ProcessConfig> &configs, int _monitorInterval = 1);
+    ~ProcessMonitor();
     void SetConfigs(const std::vector<ProcessConfig> &configs);
+    void clean();
     void scan();
+    void sample();
     void run();
 };
 
