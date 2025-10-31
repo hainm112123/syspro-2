@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <time.h>
 
 struct ProcessConfig {
   std::string name;

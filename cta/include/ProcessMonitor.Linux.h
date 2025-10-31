@@ -18,8 +18,9 @@ class ProcessMonitor {
   public:
     struct ProcessInfo {
       pid_t pid = -1;
-      int statFd = -1, statusFd = -1;
-      unsigned long long lastUTime = 0, lastSTime = 0, lastTotalTime = 0;
+      int statFd = -1, statusFd = -1, ioFd = -1;
+      unsigned long long lastUTime = 0, lastSTime = 0, lastTotalTime = 0, lastIO = 0;
+      double lastTime = 0;
       ProcessStat limit;
       ProcessInfo() {}
       ProcessInfo(ProcessStat _limit): limit(_limit) {}
