@@ -2,6 +2,8 @@
 #ifndef PROCESS_MONITOR_WIN_H
 #define PROCESS_MONITOR_WIN_H
 
+#define UNICODE
+#define _UNICODE
 #include "utils.h"
 #include <windows.h>
 #include <psapi.h>
