@@ -5,15 +5,15 @@
 #include <thread>
 #include <chrono>
 
-static double getCurrentTime() {
-  struct timespec ts;
-  clock_gettime(CLOCK_MONOTONIC, &ts);
-  return ts.tv_sec + ts.tv_nsec / 1e9;
-}
+//static double getCurrentTime() {
+//  struct timespec ts;
+//  clock_gettime(CLOCK_MONOTONIC, &ts);
+//  return ts.tv_sec + ts.tv_nsec / 1e9;
+//}
 
 ProcessMonitor::ProcessMonitor(const std::vector<ProcessConfig> &configs, int _monitorInterval): monitorInterval(_monitorInterval) {
-  ticksPerSec = sysconf(_SC_CLK_TCK);
-  pageSize = sysconf(_SC_PAGE_SIZE);
+  //ticksPerSec = sysconf(_SC_CLK_TCK);
+  //pageSize = sysconf(_SC_PAGE_SIZE);
   SetConfigs(configs);
 }
 
@@ -37,10 +37,16 @@ static ULONGLONG fileTimeToULL(const FILETIME &ft) {
   return ((ULONGLONG)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
 }
 
-static std::vector<DWORD> findProcessesByName(const std::wstring &processName) {
+static std::wstring stringToWstring(const std::string &str) {
+  std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> conv;
+  return conv.from_bytes(str);
+}
+
+static std::vector<DWORD> findProcessesByName(const std::wstring processName) {
   std::vector<DWORD> pids;
-  HANDLE snapshot = createToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
   if (snapshot == INVALID_HANDLE_VALUE) return pids;
+  PROCESSENTRY32W entry{ sizeof(entry) };
   if (Process32FirstW(snapshot, &entry)) {
     do {
       if (_wcsicmp(entry.szExeFile, processName.c_str()) == 0)
@@ -75,13 +81,14 @@ static double getCPU(ProcessMonitor::ProcessInfo &info, ULONGLONG sysDelta) {
     info.lastProcTime = procTime;
     return 0;
   }
+  //std::cout << info.lastProcTime << " " << procTime << " " << sysDelta << "\n";
   double cpu = sysDelta > 0 ? 100.0 * (double)(procTime - info.lastProcTime) / sysDelta : 0.0;
   info.lastProcTime = procTime;
   return cpu;
 }
 
 void ProcessMonitor::scan() {
-  for (auto &[name, info]) info.pids = findProcessesByName(name); 
+  for (auto &[name, info]: processes) info.pids = findProcessesByName(stringToWstring(name)); 
 }
 
 void ProcessMonitor::sample() {
@@ -92,13 +99,13 @@ void ProcessMonitor::sample() {
   ULONGLONG sysUserNowU = fileTimeToULL(sysUserNow);
   ULONGLONG sysDelta = 0;
   if (lastSysTime > 0) {
-    sysDelta = sysKernelNowU + sysUserNowU - sysDelta;
+    sysDelta = sysKernelNowU + sysUserNowU - lastSysTime;
   }
   lastSysTime = sysKernelNowU + sysUserNowU;
 
   for (auto &[name, info]: processes) {
     double cpu = getCPU(info, sysDelta);
-    std::cout << name << " " << cpu << "\n";
+    std::cout << name << " " << info.pids.size() << " " << cpu << "\n";
   }
 }
 

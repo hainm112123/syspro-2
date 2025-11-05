@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.15)
 project(cta)
 
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
 add_executable(cta src/main.cpp)
 
 if(WIN32)
