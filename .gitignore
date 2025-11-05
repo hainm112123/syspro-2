@@ -47,3 +47,4 @@ cpu_busy
 ram_use
 stress_test
 stress_test.tmp
+.vs

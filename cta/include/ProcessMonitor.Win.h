@@ -1,0 +1,42 @@
+#pragma once
+#ifndef PROCESS_MONITOR_WIN_H
+#define PROCESS_MONITOR_WIN_H
+
+#include "utils.h"
+#include <windows.h>
+#include <psapi.h>
+#include <iostream>
+#include <unordered_map>
+#include <string>
+#include <vector>
+#include <chrono>
+#include <thread>
+#include <tlhelp32.h>
+
+class ProcessMonitor {
+  public:
+    struct ProcessInfo {
+      std::vector<DWORD> pids;
+      ULONGLONG lastProcTime = 0;
+      ProcessStat limit;
+      ProcessInfo() {}
+      ProcessInfo(ProcessStat _limit): limit(_limit) {}
+    };
+  private: 
+    std::unordered_map<std::string, ProcessInfo> processes;
+    int monitorInterval;
+    long ticksPerSec, pageSize;
+    ULONGLONG lastSysTime = 0;
+
+  public:
+	  ProcessMonitor(const std::vector<ProcessConfig> &configs, int _monitorInterval = 1);
+    ~ProcessMonitor();
+    void SetConfigs(const std::vector<ProcessConfig> &configs);
+    void clean();
+    void scan();
+    void sample();
+    void run();
+}
+
+
+#endif
