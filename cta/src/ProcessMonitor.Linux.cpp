@@ -134,14 +134,61 @@ static double getDisk(ProcessMonitor::ProcessInfo &info) {
   }
   std::cout << found << " " << read_bytes << " " << write_bytes << "\n";
   double currentTime = getCurrentTime();
-  double diskUsage = (double)(read_bytes + write_bytes - info.lastIO) / (1024.0 * 1024.0 * (currentTime - info.lastTime));
+  double diskUsage = (double)(read_bytes + write_bytes - info.lastIO) / (1024.0 * 1024.0 * (currentTime - info.lastDiskTime));
   info.lastIO = read_bytes + write_bytes;
-  info.lastTime = currentTime;
+  info.lastDiskTime = currentTime;
   return diskUsage;
 }
 
-static double getNetwork(ProcessMonitor::ProcessInfo &info) {
+static void bump_memlock_rlimit() {
+  struct rlimit rlim_new = {RLIM_INFINITY, RLIM_INFINITY};
+  if (setrlimit(RLIMIT_MEMLOCK, &rlim_new)) {
+    perror("setrlimit(RLIMIT_MEMLOCK)");
+  }
+}
 
+bool ProcessMonitor::initNetStat() {
+  const char *obj_path = "monitor.bpf.o";
+  bump_memlock_rlimit();
+
+  obj = bpf_object__open_file(obj_path, nullptr);
+  if (libbpf_get_error(obj)) {
+    std::perror("Failed to open BPF object");
+    return false;
+  }
+  int err = bpf_object__load(obj);
+  if (err != 0) {
+    std::perror("Failed to load BPF object");
+    bpf_object__close(obj);
+    return false;
+  }
+  struct bpf_program *prog;
+  bpf_object__for_each_program(prog, obj) {
+    const char *sec = bpf_program__section_name(prog);
+    if (strncmp(sec, "kprobe/", 7) == 0) {
+      struct bpf_link *link = bpf_program__attach_kprobe(prog, false, sec + 7);
+      if (!link) {
+        std::perror("Failed to attach kprobe");
+      }
+    }
+  }
+
+  int map_tcp_tx = bpf_object__find_map_fd_by_name(obj, "tcp_tx");
+  int map_tcp_rx = bpf_object__find_map_fd_by_name(obj, "tcp_rx");
+  int map_udp_tx = bpf_object__find_map_fd_by_name(obj, "udp_tx");
+  int map_udp_rx = bpf_object__find_map_fd_by_name(obj, "udp_rx");
+  netMaps.push_back(map_tcp_tx);
+  netMaps.push_back(map_tcp_rx);
+  netMaps.push_back(map_udp_tx);
+  netMaps.push_back(map_udp_rx);
+
+  if (map_tcp_tx < 0 || map_tcp_rx < 0 || map_udp_tx < 0 || map_udp_rx < 0) {
+    std::perror("Failed to find maps");
+    bpf_object__close(obj);
+    return false;
+  }
+
+  return true;
 }
 
 ProcessMonitor::ProcessMonitor(const std::vector<ProcessConfig> &configs, int _monitorInterval): monitorInterval(_monitorInterval) {
@@ -151,6 +198,7 @@ ProcessMonitor::ProcessMonitor(const std::vector<ProcessConfig> &configs, int _m
 }
 
 ProcessMonitor::~ProcessMonitor() {
+  bpf_object__close(obj);
   clean();
 }
 
@@ -188,26 +236,49 @@ void ProcessMonitor::scan() {
     process.statFd = open(statPath.c_str(), O_RDONLY | O_CLOEXEC);
     process.statusFd = open(statusPath.c_str(), O_RDONLY | O_CLOEXEC);
     process.ioFd = open(ioPath.c_str(), O_RDONLY | O_CLOEXEC);
-    process.lastTime = getCurrentTime();
+    process.lastDiskTime = getCurrentTime();
+    process.lastNetTime = getCurrentTime();
   }
   closedir(dir);
 }
 
 void ProcessMonitor::sample() {
   unsigned long long totalTime = getTotalCPUTime();
+
+  auto getNet = [&](ProcessInfo &info) {
+    uint64_t totalBytes = 0, val = 0;
+    uint32_t pid = info.pid;
+    for (int net_map: netMaps) {
+      val = 0;
+      if (bpf_map_lookup_elem(net_map, &pid, &val) == 0) {
+        totalBytes += val;
+      }
+    }
+
+    double currentNetTime = getCurrentTime();
+    double net = (double)(totalBytes - info.lastTotalBytes) / (1024.0 * (currentNetTime - info.lastNetTime));
+    info.lastNetTime = currentNetTime;
+    info.lastTotalBytes = totalBytes;
+    return net;
+  };
+
   for (auto &[name, info]: processes) {
     if (info.statFd < 0 || info.statusFd < 0 || info.ioFd < 0) continue;
     double cpu = getCPU(info, totalTime);
     double memory = getMemory(info);
     double disk = getDisk(info);
-    if (cpu > info.limit.cpu || memory > info.limit.memory || disk > info.limit.disk) {
-      std::cout << std::fixed << std::setprecision(2) << "Alert: " << name << " " << info.pid << " use: " << cpu << " " << memory << " " << disk << "\n";
+    double net = getNet(info);
+    if (cpu > info.limit.cpu || memory > info.limit.memory || disk > info.limit.disk || net > info.limit.network) {
+      std::cout << std::fixed << std::setprecision(2) << "Alert: " << name << " " << info.pid << " use: " << cpu << " " << memory << " " << disk << " " << net << "\n";
     }
   }
 }
 
 void ProcessMonitor::run() {
   scan();
+  if (!initNetStat()) {
+    return;
+  }
   while (1) {
     std::this_thread::sleep_for(std::chrono::seconds(monitorInterval));
     sample();
