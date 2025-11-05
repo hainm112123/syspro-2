@@ -21,13 +21,14 @@ class ProcessMonitor {
 public:
   struct ProcessInfo {
     std::vector<DWORD> pids;
-    ULONGLONG lastProcTime = 0;
+    ULONGLONG lastProcTime = 0, lastTotalIO = 0;
+    std::chrono::steady_clock::time_point lastTime;
     ProcessStat limit;
     ProcessInfo() {}
     ProcessInfo(ProcessStat _limit) : limit(_limit) {}
   };
 private:
-  std::unordered_map<std::string, ProcessInfo> processes;
+  std::unordered_map<std::wstring, ProcessInfo> processes;
   int monitorInterval;
   long ticksPerSec, pageSize;
   ULONGLONG lastSysTime = 0;
