@@ -20,9 +20,8 @@
 class ProcessMonitor {
   public:
     struct ProcessInfo {
-      pid_t pid = -1;
-      int statFd = -1, statusFd = -1, ioFd = -1;
-      unsigned long long lastUTime = 0, lastSTime = 0, lastTotalTime = 0, lastIO = 0;
+      std::vector<pid_t> pids;
+      unsigned long long lastProcTime = 0, lastCpuTime = 0, lastIO = 0;
       double lastDiskTime = 0, lastNetTime = 0;
       uint64_t lastTotalBytes = 0;
       ProcessStat limit;

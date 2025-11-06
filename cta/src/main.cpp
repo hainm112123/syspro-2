@@ -3,12 +3,15 @@
 #else
 #include "ProcessMonitor.Linux.h"
 #endif
+#include "ConfigManager.h"
+#include <iostream>
 
 int main() {
-    std::vector<ProcessConfig> configs;
-    configs.push_back(ProcessConfig("stress_win.exe", 0, 0, 0, 0));
-    configs.push_back(ProcessConfig("brave.exe", 0, 0, 0, 0));
-    ProcessMonitor monitor(configs, 3);
+    ConfigManager cnfMgr;
+    cnfMgr.saveConfig();
+    auto configs = cnfMgr.getConfig();
+    for (auto &conf: configs) std::cout << conf.name << " " << conf.cpu << "\n";
+    ProcessMonitor monitor(configs, 1);
     monitor.run();
 
     return 0;

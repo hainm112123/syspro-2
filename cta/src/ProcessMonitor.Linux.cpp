@@ -31,7 +31,7 @@ static inline bool getProcessName(char *pid, std::string &pname) {
   return 1;
 } 
 
-static unsigned long long getTotalCPUTime() {
+static unsigned long long getTotalCpuTime() {
   int fd = open("/proc/stat", O_RDONLY | O_CLOEXEC);
   if (fd < 0) return 0;
   char buf[1024];
@@ -50,42 +50,47 @@ static unsigned long long getTotalCPUTime() {
   return total;
 }
 
-static double getCPU(ProcessMonitor::ProcessInfo &info, const unsigned long long &totalTime) {
+static double getCPU(ProcessMonitor::ProcessInfo &info, const unsigned long long &cpuTime) {
   char buf[4096];
-  // int fd = open("/proc/58096/stat", O_RDONLY);
-  ssize_t n = pread(info.statFd, buf, sizeof(buf) - 1, 0);
-  if (n <= 0) {
-    close(info.statFd);
-    info.statFd = -1;
-    return 0.0;
-  }
-  buf[n] = '\0';
+  unsigned long long procTime = 0;
+  for (const auto &pid: info.pids) {
+    char statPath[27];
+    snprintf(statPath, sizeof(statPath), "/proc/%d/stat", (uint32_t)pid);
+    int statFd = open(statPath, O_RDONLY | O_CLOEXEC);
+    if (statFd < 0) continue;
+    ssize_t n = pread(statFd, buf, sizeof(buf) - 1, 0);
+    if (n <= 0) {
+      close(statFd);
+      continue;
+    }
+    buf[n] = '\0';
 
-  const char *ptr = buf;
-  unsigned long long utime = 0, stime = 0;
-  long rss = 0;
-  for (int i = 0; i < 25; ++ i) {
-    while (*ptr && *ptr == ' ') ptr ++;
-    if (!(*ptr)) break;
-    const char *start = ptr;
-    while (*ptr && *ptr != ' ') ptr++;
-    // std::cout << i << "\n";
-    if (i == 13) utime = strtoull(start, (char **)&ptr, 10);
-    else if (i == 14) stime = strtoull(start, (char **)&ptr, 10);
-    else if (i == 23) rss = strtol(start, (char **)&ptr, 10);
-    ptr ++;
-  }
+    const char *ptr = buf;
+    unsigned long long utime = 0, stime = 0;
+    long rss = 0;
+    for (int i = 0; i < 25; ++ i) {
+      while (*ptr && *ptr == ' ') ptr ++;
+      if (!(*ptr)) break;
+      const char *start = ptr;
+      while (*ptr && *ptr != ' ') ptr++;
+      // std::cout << i << "\n";
+      if (i == 13) utime = strtoull(start, (char **)&ptr, 10);
+      else if (i == 14) stime = strtoull(start, (char **)&ptr, 10);
+      else if (i == 23) rss = strtol(start, (char **)&ptr, 10);
+      ptr ++;
+    }
 
+    procTime += utime + stime;
+  }
   // std::cout << info.pid << " " << utime << " " << stime << " " << rss << "\n";
   double cpuUsage = 0.0;
-  if (info.lastTotalTime > 0) {
-    unsigned long long deltaProc = (utime + stime) - (info.lastUTime + info.lastSTime);
-    unsigned long long deltaTotal = totalTime - info.lastTotalTime;
+  if (info.lastCpuTime > 0) {
+    unsigned long long deltaProc = procTime - info.lastProcTime;
+    unsigned long long deltaTotal = cpuTime - info.lastCpuTime;
     cpuUsage = 100.0 * (double)deltaProc / deltaTotal;
   }
-  info.lastUTime = utime;
-  info.lastSTime = stime;
-  info.lastTotalTime = totalTime;
+  info.lastProcTime = procTime;
+  info.lastCpuTime = cpuTime;
 
   // close(fd);
   return cpuUsage;
@@ -93,49 +98,63 @@ static double getCPU(ProcessMonitor::ProcessInfo &info, const unsigned long long
 
 static size_t getMemory(ProcessMonitor::ProcessInfo &info) {
   char buf[1024];
-  ssize_t n = pread(info.statusFd, buf, sizeof(buf) - 1, 0);
-  size_t memKB = 0;
-  if (n > 0) {
-    buf[n] = '\0';
-    const char *vmrss = strstr(buf, "VmRSS:");
-    if (vmrss) memKB = strtoul(vmrss + 6, nullptr, 10);
-  } else {
-    close(info.statusFd);
-    info.statusFd = -1;
+  size_t memory = 0;
+  for (const auto &pid: info.pids) {
+    char statusPath[29];
+    snprintf(statusPath, sizeof(statusPath), "/proc/%d/status", (uint32_t)pid);
+    int statusFd = open(statusPath, O_RDONLY | O_CLOEXEC);
+    if (statusFd < 0) continue;
+    ssize_t n = pread(statusFd, buf, sizeof(buf) - 1, 0);
+    size_t memKB = 0;
+    if (n > 0) {
+      buf[n] = '\0';
+      const char *vmrss = strstr(buf, "VmRSS:");
+      if (vmrss) memKB = strtoul(vmrss + 6, nullptr, 10);
+    } else {
+      close(statusFd);
+    }
+    memory += memKB;
   }
-  return memKB / 1024;
+  return memory / 1024;
 }
 
 static double getDisk(ProcessMonitor::ProcessInfo &info) {
   char buf[1024];
-  ssize_t n = pread(info.ioFd, buf, sizeof(buf) - 1, 0);
-  if (n <= 0) {
-    close(info.ioFd);
-    info.ioFd = -1;
-    return 0.0;
-  }
-  const char *ptr = buf;
-  unsigned long long read_bytes = 0, write_bytes = 0;
-  int found = 0;
-  while (*ptr && found < 3) {
-    if (strncmp(ptr, "read_bytes:", 11) == 0) {
-      ptr += 11;
-      while (*ptr == ' ' || *ptr == '\t') ptr ++;
-      read_bytes = strtoull(ptr, (char **)&ptr, 10);
-      found |= 1;
-    } else if (strncmp(ptr, "write_bytes:", 12) == 0) {
-      ptr += 12;
-      while (*ptr == ' ' || *ptr == '\t') ptr ++;
-      write_bytes = strtoull(ptr, (char **)&ptr, 10);
-      found |= 2;
+  unsigned long long ioCount = 0;
+  for (const auto &pid: info.pids) {
+    char ioPath[25];
+    snprintf(ioPath, sizeof(ioPath), "/proc/%d/io", (uint32_t)pid);
+    int ioFd = open(ioPath, O_RDONLY | O_CLOEXEC);
+    if (ioFd < 0) continue;
+    ssize_t n = pread(ioFd, buf, sizeof(buf) - 1, 0);
+    if (n <= 0) {
+      close(ioFd);
+      continue;
     }
-    while (*ptr && *ptr != '\n') ptr ++;
-    if (*ptr == '\n') ptr ++;
+    const char *ptr = buf;
+    unsigned long long read_bytes = 0, write_bytes = 0;
+    int found = 0;
+    while (*ptr && found < 3) {
+      if (strncmp(ptr, "read_bytes:", 11) == 0) {
+        ptr += 11;
+        while (*ptr == ' ' || *ptr == '\t') ptr ++;
+        read_bytes = strtoull(ptr, (char **)&ptr, 10);
+        found |= 1;
+      } else if (strncmp(ptr, "write_bytes:", 12) == 0) {
+        ptr += 12;
+        while (*ptr == ' ' || *ptr == '\t') ptr ++;
+        write_bytes = strtoull(ptr, (char **)&ptr, 10);
+        found |= 2;
+      }
+      while (*ptr && *ptr != '\n') ptr ++;
+      if (*ptr == '\n') ptr ++;
+    }
+    // std::cout << found << " " << read_bytes << " " << write_bytes << "\n";
+    ioCount += read_bytes + write_bytes;
   }
-  std::cout << found << " " << read_bytes << " " << write_bytes << "\n";
   double currentTime = getCurrentTime();
-  double diskUsage = (double)(read_bytes + write_bytes - info.lastIO) / (1024.0 * 1024.0 * (currentTime - info.lastDiskTime));
-  info.lastIO = read_bytes + write_bytes;
+  double diskUsage = (double)(ioCount - info.lastIO) / (1024.0 * 1024.0 * (currentTime - info.lastDiskTime));
+  info.lastIO = ioCount;
   info.lastDiskTime = currentTime;
   return diskUsage;
 }
@@ -198,7 +217,7 @@ ProcessMonitor::ProcessMonitor(const std::vector<ProcessConfig> &configs, int _m
 }
 
 ProcessMonitor::~ProcessMonitor() {
-  bpf_object__close(obj);
+  // bpf_object__close(obj);
   clean();
 }
 
@@ -209,14 +228,13 @@ void ProcessMonitor::SetConfigs(const std::vector<ProcessConfig> &configs) {
 
 void ProcessMonitor::clean() {
   for (auto &[name, info]: processes) {
-    if (info.statFd >= 0) close(info.statFd);
-    if (info.statusFd >= 0) close(info.statusFd);
-    if (info.ioFd >= 0) close(info.ioFd);
+    
   }
   processes.clear();
 }
 
 void ProcessMonitor::scan() {
+  for (auto &[name, info]: processes) info.pids.clear();
   DIR *dir = opendir("/proc");
   if (!dir) return;
   struct dirent *entry;
@@ -229,13 +247,7 @@ void ProcessMonitor::scan() {
     if (processes.find(pname) == processes.end()) continue;
 
     auto &process = processes[pname];
-    process.pid = pid;
-    std::string statPath = "/proc/" + std::string(entry->d_name) + "/stat";
-    std::string statusPath = "/proc/" + std::string(entry->d_name) + "/status";
-    std::string ioPath = "/proc/" + std::string(entry->d_name) + "/io";
-    process.statFd = open(statPath.c_str(), O_RDONLY | O_CLOEXEC);
-    process.statusFd = open(statusPath.c_str(), O_RDONLY | O_CLOEXEC);
-    process.ioFd = open(ioPath.c_str(), O_RDONLY | O_CLOEXEC);
+    process.pids.push_back(pid);
     process.lastDiskTime = getCurrentTime();
     process.lastNetTime = getCurrentTime();
   }
@@ -243,15 +255,16 @@ void ProcessMonitor::scan() {
 }
 
 void ProcessMonitor::sample() {
-  unsigned long long totalTime = getTotalCPUTime();
+  unsigned long long cpuTime = getTotalCpuTime();
 
   auto getNet = [&](ProcessInfo &info) {
     uint64_t totalBytes = 0, val = 0;
-    uint32_t pid = info.pid;
     for (int net_map: netMaps) {
       val = 0;
-      if (bpf_map_lookup_elem(net_map, &pid, &val) == 0) {
-        totalBytes += val;
+      for (auto pid: info.pids) {
+        if (bpf_map_lookup_elem(net_map, &pid, &val) == 0) {
+          totalBytes += val;
+        }
       }
     }
 
@@ -263,24 +276,23 @@ void ProcessMonitor::sample() {
   };
 
   for (auto &[name, info]: processes) {
-    if (info.statFd < 0 || info.statusFd < 0 || info.ioFd < 0) continue;
-    double cpu = getCPU(info, totalTime);
+    double cpu = getCPU(info, cpuTime);
     double memory = getMemory(info);
     double disk = getDisk(info);
     double net = getNet(info);
     if (cpu > info.limit.cpu || memory > info.limit.memory || disk > info.limit.disk || net > info.limit.network) {
-      std::cout << std::fixed << std::setprecision(2) << "Alert: " << name << " " << info.pid << " use: " << cpu << " " << memory << " " << disk << " " << net << "\n";
+      std::cout << std::fixed << std::setprecision(2) << "Alert: " << name << " " << info.pids.size() << " use: " << cpu << " " << memory << " " << disk << " " << net << "\n";
     }
   }
 }
 
 void ProcessMonitor::run() {
-  scan();
-  if (!initNetStat()) {
-    return;
-  }
+  // if (!initNetStat()) {
+  //   return;
+  // }
   while (1) {
     std::this_thread::sleep_for(std::chrono::seconds(monitorInterval));
+    scan();
     sample();
   }
 }

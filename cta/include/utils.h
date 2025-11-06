@@ -2,6 +2,9 @@
 
 #include <string>
 #include <time.h>
+#include <chrono>
+#include <sstream>
+#include <iomanip>
 
 struct ProcessConfig {
   std::string name;
@@ -15,3 +18,5 @@ struct ProcessStat {
   ProcessStat(double _cpu = 0, double _memory = 0, double _disk = 0, double _network = 0): 
     cpu(_cpu), memory(_memory), disk(_disk), network(_network) {}
 };
+
+inline std::string get_timestamp();
