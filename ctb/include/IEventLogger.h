@@ -6,6 +6,7 @@
 
 class IEventLogger {
 public:
+	const int BUF_SIZE = 8192;
 	IEventLogger() {}
 	~IEventLogger() {}
 	virtual void log(const OveruseEvent& event) = 0;

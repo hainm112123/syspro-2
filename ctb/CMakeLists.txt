@@ -10,7 +10,7 @@ if (WIN32)
 	target_sources(ctb PRIVATE src/EventLogger.Win.cpp src/utils.cpp)
 else()
 	include_directories(include)
-	target_sources(ctb PRIVATE src/EventLogger.Win.cpp src/utils.cpp)
+	target_sources(ctb PRIVATE src/EventLogger.Linux.cpp src/utils.cpp)
 endif()
 
 add_custom_command(TARGET ctb POST_BUILD

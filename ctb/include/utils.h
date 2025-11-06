@@ -2,7 +2,9 @@
 
 #include <string>
 #include <time.h>
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
 struct ProcessConfig {
   std::string name;
