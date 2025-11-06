@@ -2,6 +2,7 @@
 
 #include <string>
 #include <time.h>
+#include <chrono>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -30,6 +31,7 @@ struct OveruseEvent {
   std::wstring name;
   std::string type;
   double value;
+  std::string time;
 };
 #else 
 struct OveruseEvent {
@@ -37,5 +39,6 @@ struct OveruseEvent {
   std::string name;
   std::string type;
   double value;
+  std::string time;
 };
 #endif

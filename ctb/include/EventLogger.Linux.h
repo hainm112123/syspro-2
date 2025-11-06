@@ -9,7 +9,7 @@ private:
   std::vector<char> buffer;
 public:
   EventLogger(const std::string path) {
-    fd = open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
+    fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     buffer.reserve(BUF_SIZE);
   }
   ~EventLogger() {
