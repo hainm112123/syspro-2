@@ -1,10 +1,17 @@
+#ifdef _WIN32
+#define _UNICODE
+#define UNICODE
+#include <Windows.h>
+#include <tchar.h>
+#else
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 #include "utils.h"
 #include <vector>
 #include <nlohmann/json.hpp>
-#include <fcntl.h>
 #include <string>
-#include <sys/stat.h>
-#include <unistd.h>
 
 class ConfigManager {
   const std::string linuxConfigPath = "/etc/syspro-2/cta/config.json";

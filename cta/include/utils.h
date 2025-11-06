@@ -1,5 +1,9 @@
 #pragma once
-
+#ifdef _WIN32
+#define _UNICODE
+#define UNICODE
+#include <Windows.h>
+#endif
 #include <string>
 #include <time.h>
 #include <chrono>
@@ -20,3 +24,8 @@ struct ProcessStat {
 };
 
 inline std::string get_timestamp();
+
+#ifdef _WIN32
+std::wstring stringToWstring(const std::string& str);
+std::string wstringToString(const std::wstring& wstr);
+#endif
