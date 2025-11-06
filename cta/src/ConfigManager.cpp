@@ -1,25 +1,81 @@
 #include "ConfigManager.h"
+#include <iostream>
 
-bool ConfigManager::getNewConfig() {
-  return false;
-}
-
-static void from_json(const nlohmann::json &j, ProcessConfig &config) {
-  config.name = j.at("name").get<std::string>();
+static void from_json(const nlohmann::json& j, ProcessConfig& config) {
+  config.name = j.at("process").get<std::string>();
   config.cpu = j.at("cpu").get<double>();
   config.memory = j.at("memory").get<double>();
   config.disk = j.at("disk").get<double>();
   config.network = j.at("network").get<double>();
 }
 
-static void to_json(nlohmann::json &j, const ProcessConfig &config) {
+static void to_json(nlohmann::json& j, const ProcessConfig& config) {
   j = nlohmann::json{
-    {"name", config.name},
+    {"process", config.name},
     {"cpu", config.cpu},
     {"memory", config.memory},
     {"disk", config.disk},
     {"network", config.network}
   };
+}
+
+bool ConfigManager::getNewConfig() {
+#ifdef _WIN32
+  WSADATA wsaData;
+  WSAStartup(MAKEWORD(2, 2), &wsaData);
+  SOCKET client = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+#else
+#endif 
+  
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(port);
+  if (inet_pton(AF_INET, host.c_str(), &addr.sin_addr) <= 0) {
+    perror("Invalid address\n");
+    return false;
+  }
+  //printf("cp3\n");
+
+#ifdef _WIN32
+  if (connect(client, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
+    perror("connect failed\n");
+    return false;
+  }
+#else
+  if (connect(client, (sockaddr*)&addr, sizeof(addr)) < 0) return false;
+#endif
+  
+  //printf("cp4\n");
+  uint32_t len = 0;
+
+#ifdef _WIN32
+  recv(client, (char*)&len, sizeof(len), MSG_WAITALL);
+#else
+#endif 
+  //std::cout << len << "\n";
+  len = ntohl(len);
+  //std::cout << len << "\n";
+  std::vector<char> buffer(len);
+
+#ifdef _WIN32
+  recv(client, buffer.data(), len, MSG_WAITALL);
+#else
+#endif 
+
+  try {
+    //std::string str(buffer.begin(), buffer.end());
+    auto json = nlohmann::json::parse(buffer.begin(), buffer.end());
+    //for (auto item : json) {
+    //  std::cout << item.dump() << "\n";
+    //}
+    configs = json.get<std::vector<ProcessConfig>>();
+  }
+  catch(std::exception e) {
+    std::cout << "json parse error\n";
+    return false;
+  }
+
+  return true;
 }
 
 void ConfigManager::loadConfig() {
@@ -44,7 +100,7 @@ void ConfigManager::loadConfig() {
 }
 
 void ConfigManager::saveConfig() {
-  configs = { {"brave.exe", 10, 10, 10}, {"RTSS.exe", 20, 20, 20, 20} };
+  //configs = { {"brave.exe", 10, 10, 10}, {"RTSS.exe", 20, 20, 20, 20} };
 #ifdef _WIN32
   HKEY hKey;
   RegCreateKeyEx(HKEY_CURRENT_USER, _T("Software\\syspro-2\\cta"), 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);
@@ -60,15 +116,18 @@ void ConfigManager::saveConfig() {
   if (fd < 0) return;
   write(fd, str_conf.data(), str_conf.size());
 #endif
-  configs.clear();
+  //configs.clear();
 }
 
 std::vector<ProcessConfig> ConfigManager::getConfig() {
   if (!configs.empty()) return configs;
   if (getNewConfig()) {
+    printf("New Config\n");
     saveConfig();
   } else {
+    printf("Old Config\n");
     loadConfig();
   }
+  printf("Load completed\n");
   return configs;
 }

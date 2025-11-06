@@ -3,15 +3,16 @@ project(ctb)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+include_directories(include)
 
 add_executable(ctb src/main.cpp)
 if (WIN32) 
-	include_directories(include)
-	target_sources(ctb PRIVATE src/EventLogger.Win.cpp src/utils.cpp)
+	target_sources(ctb PRIVATE src/EventLogger.Win.cpp)
+	target_link_libraries(ctb PRIVATE Ws2_32)
 else()
-	include_directories(include)
-	target_sources(ctb PRIVATE src/EventLogger.Linux.cpp src/utils.cpp)
+	target_sources(ctb PRIVATE src/EventLogger.Linux.cpp)
 endif()
+target_sources(ctb PRIVATE src/utils.cpp src/ConfigModifier.cpp)
 
 add_custom_command(TARGET ctb POST_BUILD
 	COMMAND ${CMAKE_COMMAND} -E copy_if_different

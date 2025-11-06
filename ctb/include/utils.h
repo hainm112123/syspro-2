@@ -1,11 +1,14 @@
 #pragma once
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define UNICODE
+#define _UNICODE
+#include <windows.h>
+#endif
 #include <string>
 #include <time.h>
 #include <chrono>
-#ifdef _WIN32
-#include <windows.h>
-#endif
 
 struct ProcessConfig {
   std::string name;
