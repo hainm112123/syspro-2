@@ -1,0 +1,16 @@
+[
+  {
+    "process": "chrome.exe",
+    "cpu": 10,
+    "memory": 200,
+    "disk": 1,
+    "network": 500
+  },
+  {
+    "process": "brave.exe",
+    "cpu": 50,
+    "memory": 100,
+    "disk": 10,
+    "network": 100
+  }
+]

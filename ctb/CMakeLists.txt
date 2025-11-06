@@ -7,8 +7,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_executable(ctb src/main.cpp)
 if (WIN32) 
 	include_directories(include)
-	target_sources(ctb PRIVATE src/ProcessMonitor.Win.cpp)
+	target_sources(ctb PRIVATE src/EventLogger.Win.cpp src/utils.cpp)
 else()
 	include_directories(include)
-	target_sources(ctb PRIVATE src/ProcessMonitor.Win.cpp)
+	target_sources(ctb PRIVATE src/EventLogger.Win.cpp src/utils.cpp)
 endif()
+
+add_custom_command(TARGET ctb POST_BUILD
+	COMMAND ${CMAKE_COMMAND} -E copy_if_different
+	"${CMAKE_SOURCE_DIR}/utils/config.json"
+	"$<TARGET_FILE_DIR:ctb>/config.json"
+)
