@@ -16,6 +16,11 @@
 #include <tlhelp32.h>
 #include <locale>
 #include <codecvt>
+#include <evntrace.h>
+#include <evntprov.h>
+#include <wbemidl.h>
+#include <wmistr.h>
+#pragma comment(lib, "advapi32.lib")
 
 class ProcessMonitor {
 public:
@@ -30,7 +35,6 @@ public:
 private:
   std::unordered_map<std::wstring, ProcessInfo> processes;
   int monitorInterval;
-  long ticksPerSec, pageSize;
   ULONGLONG lastSysTime = 0;
 
 public:

@@ -3,17 +3,12 @@
 #include <iostream>
 #include <iomanip>
 #include <thread>
-#include <chrono>
+#include <chrono>  
+#define INITGUID
 
-//static double getCurrentTime() {
-//  struct timespec ts;
-//  clock_gettime(CLOCK_MONOTONIC, &ts);
-//  return ts.tv_sec + ts.tv_nsec / 1e9;
-//}
+const static GUID DiskIO_Provider_GUID = { 0x9c1f9f5e, 0x5645, 0x474f, { 0x81, 0x7f, 0x11, 0x93, 0x4a, 0x3c, 0xa0, 0xe0 } };
 
 ProcessMonitor::ProcessMonitor(const std::vector<ProcessConfig> &configs, int _monitorInterval): monitorInterval(_monitorInterval) {
-  //ticksPerSec = sysconf(_SC_CLK_TCK);
-  //pageSize = sysconf(_SC_PAGE_SIZE);
   SetConfigs(configs);
 }
 
@@ -90,6 +85,43 @@ static void getStats(ProcessMonitor::ProcessInfo& info, ULONGLONG sysDelta, doub
   info.lastProcTime = procTime;
 }
 
+void WINAPI ProcessEvent(PEVENT_TRACE pEvent);
+static void startEtwMonitoring() {
+  ULONG status = ERROR_SUCCESS;
+  EVENT_TRACE_LOGFILE trace;
+  TRACE_LOGFILE_HEADER* pHeader = &trace.LogfileHeader;
+  TRACEHANDLE hTrace = 0;
+
+  ZeroMemory(&trace, sizeof(EVENT_TRACE_LOGFILE));
+  trace.LogFileName = (LPWSTR)L"test.etl";
+  trace.EventCallback = (PEVENT_CALLBACK)(ProcessEvent);
+
+  hTrace = OpenTrace(&trace);
+  if ((TRACEHANDLE)INVALID_HANDLE_VALUE == hTrace) {
+    wprintf(L"OpenTrace failed with %lu\n", GetLastError());
+    goto cleanup;
+  }
+
+  status = ProcessTrace(&hTrace, 1, 0, 0);
+  if (status != ERROR_SUCCESS && status != ERROR_CANCELLED) {
+    wprintf(L"ProcessTrace failed with %lu\n", status);
+    goto cleanup;
+  }
+
+cleanup:
+  if ((TRACEHANDLE)INVALID_HANDLE_VALUE != hTrace) {
+    status = CloseTrace(hTrace);
+  }
+}
+void WINAPI ProcessEvent(PEVENT_TRACE pEvent) {
+  if (IsEqualGUID(pEvent->Header.Guid, EventTraceGuid) && pEvent->Header.Class.Type == EVENT_TRACE_TYPE_INFO) {
+    ; // Skip this event.
+  }
+  else {
+    
+  }
+}
+
 void ProcessMonitor::scan() {
   for (auto &[name, info]: processes) info.pids.clear();
   HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -124,6 +156,7 @@ void ProcessMonitor::sample() {
 }
 
 void ProcessMonitor::run() {
+  //startEtwMonitoring();
   while (1) {
     std::this_thread::sleep_for(std::chrono::seconds(monitorInterval));
     scan();
