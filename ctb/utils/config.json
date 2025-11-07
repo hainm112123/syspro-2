@@ -1,13 +1,13 @@
 [
   {
-    "process": "chrome.exe",
+    "process": "node",
     "cpu": 10,
     "memory": 200,
     "disk": 1,
     "network": 500
   },
   {
-    "process": "brave.exe",
+    "process": "cpptools-srv",
     "cpu": 50,
     "memory": 100,
     "disk": 10,

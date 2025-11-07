@@ -7,6 +7,11 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #else
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 #endif
 
 #include "nlohmann/json.hpp"

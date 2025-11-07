@@ -25,6 +25,7 @@ bool ConfigManager::getNewConfig() {
   WSAStartup(MAKEWORD(2, 2), &wsaData);
   SOCKET client = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 #else
+  int client = socket(AF_INET, SOCK_STREAM, 0);
 #endif 
   
   sockaddr_in addr{};
@@ -48,19 +49,12 @@ bool ConfigManager::getNewConfig() {
   //printf("cp4\n");
   uint32_t len = 0;
 
-#ifdef _WIN32
   recv(client, (char*)&len, sizeof(len), MSG_WAITALL);
-#else
-#endif 
   //std::cout << len << "\n";
   len = ntohl(len);
   //std::cout << len << "\n";
   std::vector<char> buffer(len);
-
-#ifdef _WIN32
   recv(client, buffer.data(), len, MSG_WAITALL);
-#else
-#endif 
 
   try {
     //std::string str(buffer.begin(), buffer.end());

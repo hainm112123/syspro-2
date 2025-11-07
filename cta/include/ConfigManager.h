@@ -10,6 +10,8 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
 #endif
 #include <vector>
 #include <nlohmann/json.hpp>

@@ -25,6 +25,17 @@ std::string ConfigModifier::loadConfigAsString() {
 	CloseHandle(hFile);
 	return std::string(buffer.begin(), buffer.end());
 #else
+	int fd = open(configFilePath.c_str(), O_RDONLY | O_CLOEXEC);
+	if (fd < 0) return "";
+	struct stat st;
+	fstat(fd, &st);
+	std::vector<char> buffer(st.st_size);
+	if (read(fd, buffer.data(), st.st_size) < 0) {
+		close(fd);
+		return "";
+	}
+	close(fd);
+	return std::string(buffer.begin(), buffer.end());
 #endif
 }
 
@@ -34,6 +45,7 @@ bool ConfigModifier::start() {
 	WSAStartup(MAKEWORD(2, 2), &wsaData);
 	SOCKET server = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 #else
+	int server = socket(AF_INET, SOCK_STREAM, 0);
 #endif 
 	sockaddr_in addr{};
 	addr.sin_family = AF_INET;
@@ -68,9 +80,15 @@ bool ConfigModifier::start() {
 	send(client, (char*)&len, sizeof(len), 0);
 	send(client, config.c_str(), config.size(), 0);
 
+	closesocket(client);
 	closesocket(server);
 	WSACleanup();
 #else
+	int client = accept(server, nullptr, nullptr);
+	send(client, (char*)&len, sizeof(len), 0);
+	send(client, config.c_str(), config.size(), 0);
+	close(client);
+	close(server);
 #endif
 	return true;
 }
