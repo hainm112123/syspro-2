@@ -65,9 +65,16 @@ bool ConfigManager::getNewConfig() {
     configs = json.get<std::vector<ProcessConfig>>();
   }
   catch(std::exception e) {
-    std::cout << "json parse error\n";
+    perror("json parse error");
     return false;
   }
+
+#ifdef _WIN32
+	closesocket(client);
+	WSACleanup();
+#else
+	close(client);
+#endif
 
   return true;
 }

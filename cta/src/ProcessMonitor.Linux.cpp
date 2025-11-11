@@ -280,21 +280,95 @@ void ProcessMonitor::sample() {
     double memory = getMemory(info);
     double disk = getDisk(info);
     double net = getNet(info);
-    if (cpu > info.limit.cpu || memory > info.limit.memory || disk > info.limit.disk || net > info.limit.network) {
-      std::cout << std::fixed << std::setprecision(2) << "Alert: " << name << " " << info.pids.size() << " use: " << cpu << " " << memory << " " << disk << " " << net << "\n";
+    // if (cpu > info.limit.cpu || memory > info.limit.memory || disk > info.limit.disk || net > info.limit.network) {
+    //   std::cout << std::fixed << std::setprecision(2) << "Alert: " << name << " " << info.pids.size() << " use: " << cpu << " " << memory << " " << disk << " " << net << "\n";
+    // }
+    if (cpu > info.limit.cpu) {
+      addEvent({info.pids[0], name, "cpu", cpu, get_timestamp()});
+    }
+    if (memory > info.limit.memory) {
+      addEvent({info.pids[0], name, "memory", memory, get_timestamp()});
+    }
+    if (disk > info.limit.disk) {
+      addEvent({info.pids[0], name, "disk", disk, get_timestamp()});
+    }
+    if (net > info.limit.network) {
+      addEvent({info.pids[0], name, "network", net, get_timestamp()});
     }
   }
+}
+
+static void* threadEntry(void *arg) {
+  return static_cast<ProcessMonitor*>(arg)->sendEventFd();
 }
 
 void ProcessMonitor::run() {
   // if (!initNetStat()) {
   //   return;
   // }
+
+  eventFd = eventfd(0, 0);
+  unixSocketFd = socket(AF_UNIX, SOCK_STREAM, 0);
+  pthread_t tEvent;
+  pthread_create(&tEvent, nullptr, &threadEntry, this);
+
   while (1) {
+    printf("Start monitoring....\n");
+    printf("Press q to quit.\n");
+    int c = getchar();
+    if (c == 'q') break;
     std::this_thread::sleep_for(std::chrono::seconds(monitorInterval));
     scan();
     sample();
   }
+
+  shutdown(unixSocketFd, SHUT_RD);
+  close(unixSocketFd);
+  printf("Unix Socket closed\n");
+  pthread_join(tEvent, nullptr);
+  close(eventFd);
+}
+
+void* ProcessMonitor::sendEventFd() {
+  unlink(UnixSocketPath.c_str());
+  
+  struct sockaddr_un addr = {0};
+  addr.sun_family = AF_UNIX;
+  strncpy(addr.sun_path, UnixSocketPath.c_str(), sizeof(addr.sun_path) - 1);
+  bind(unixSocketFd, (struct sockaddr*)&addr, sizeof(addr));
+  listen(unixSocketFd, 5);
+  int clientfd = accept(unixSocketFd, NULL, NULL);
+
+  printf("client socket: %d\n", clientfd);
+  if (clientfd < 0) return nullptr;
+
+  struct msghdr msg = {0};
+  char buf[CMSG_SPACE(sizeof(eventFd))];
+  char dummy = '*';
+  struct iovec io = {.iov_base = &dummy, .iov_len = 1};
+  msg.msg_iov = &io;
+  msg.msg_iovlen = 1;
+  msg.msg_control = buf;
+  msg.msg_controllen = sizeof(buf);
+
+  struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+  cmsg->cmsg_len = CMSG_LEN(sizeof(eventFd));
+  cmsg->cmsg_level = SOL_SOCKET;
+  cmsg->cmsg_type = SCM_RIGHTS;
+  *((int *) CMSG_DATA(cmsg)) = eventFd;
+
+  // printf("unixSocketFd: %d, clientfd: %d\n", unixSocketFd, clientfd);
+  if (sendmsg(clientfd, &msg, 0) == -1) {
+    perror("Send event fd");
+  }
+
+  close(clientfd);
+
+  return nullptr;
+}
+
+void ProcessMonitor::addEvent(OveruseEvent event) {
+
 }
 
 #endif

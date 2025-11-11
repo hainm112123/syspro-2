@@ -3,6 +3,7 @@
 #define PROCESS_MONITOR_LINUX_H
 
 #include "utils.h"
+#include "IProcessMonitor.h"
 #include <unordered_map>
 #include <map>
 #include <vector>
@@ -14,10 +15,13 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/resource.h>
+#include <sys/socket.h>
+#include <sys/eventfd.h>
+#include <sys/un.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 
-class ProcessMonitor {
+class ProcessMonitor : public IProcessMonitor {
   public:
     struct ProcessInfo {
       std::vector<pid_t> pids;
@@ -29,6 +33,8 @@ class ProcessMonitor {
       ProcessInfo(ProcessStat _limit): limit(_limit) {}
     };
   private: 
+    const std::string UnixSocketPath = "/tmp/eventfd.sock";
+    int eventFd, unixSocketFd;
     std::unordered_map<std::string, ProcessInfo> processes;
     // int map_tcp_tx, map_tcp_rx, map_udp_tx, map_udp_rx;
     std::vector<int> netMaps;
@@ -44,6 +50,8 @@ class ProcessMonitor {
     void scan();
     void sample();
     void run();
+    void* sendEventFd();
+    void addEvent(OveruseEvent event);
 };
 
 #endif

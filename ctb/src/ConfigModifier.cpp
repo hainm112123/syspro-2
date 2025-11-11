@@ -84,10 +84,22 @@ bool ConfigModifier::start() {
 	closesocket(server);
 	WSACleanup();
 #else
-	int client = accept(server, nullptr, nullptr);
-	send(client, (char*)&len, sizeof(len), 0);
-	send(client, config.c_str(), config.size(), 0);
-	close(client);
+	fd_set fds;
+	FD_ZERO(&fds);
+	FD_SET(server, &fds);
+	struct timeval tv;
+	tv.tv_sec = 10;
+	tv.tv_usec = 0;
+	printf("Waiting for config socket connection...\n");
+	int result = select(server + 1, &fds, nullptr, nullptr, &tv);
+	if (result > 0 && FD_ISSET(server, &fds)) {
+		int client = accept(server, nullptr, nullptr);
+		printf("Client socket: %d\n", client);
+		send(client, (char*)&len, sizeof(len), 0);
+		send(client, config.c_str(), config.size(), 0);
+		close(client);
+	}
+	
 	close(server);
 #endif
 	return true;

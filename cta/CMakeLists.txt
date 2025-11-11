@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_executable(cta src/main.cpp)
 
+target_sources(cta PRIVATE src/utils.cpp src/ConfigManager.cpp)
+
 if(WIN32)
   find_library(ADVAPI32_LIBRARY NAMES advapi32)
   find_library(KERNEL32_LIBRARY NAMES kernel32)
@@ -43,5 +45,3 @@ else()
   add_dependencies(cta bpf_obj)
   target_include_directories(cta PRIVATE /usr/include)
 endif()
-
-target_sources(cta PRIVATE src/utils.cpp src/ConfigManager.cpp)
