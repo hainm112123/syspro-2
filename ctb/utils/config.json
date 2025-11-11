@@ -1,14 +1,14 @@
 [
   {
     "process": "node",
-    "cpu": 10,
+    "cpu": 0,
     "memory": 200,
     "disk": 1,
     "network": 500
   },
   {
     "process": "cpptools-srv",
-    "cpu": 50,
+    "cpu": 0,
     "memory": 100,
     "disk": 10,
     "network": 100

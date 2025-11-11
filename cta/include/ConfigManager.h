@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <arpa/inet.h>
 #endif
 #include <vector>
@@ -23,7 +24,10 @@ class ConfigManager {
   const std::string host = "127.0.0.1";
   std::vector<ProcessConfig> configs;
 public:
-  ConfigManager() {}
+  ConfigManager() {
+    mkdir("/etc/syspro-2", 0755);
+    mkdir("/etc/syspro-2/cta", 0755);
+  }
   ~ConfigManager() {}
 
   bool getNewConfig();

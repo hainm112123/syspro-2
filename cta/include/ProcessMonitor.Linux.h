@@ -20,6 +20,8 @@
 #include <sys/un.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
+#include <sys/mman.h>
+#include <queue>
 
 class ProcessMonitor : public IProcessMonitor {
   public:
@@ -33,7 +35,9 @@ class ProcessMonitor : public IProcessMonitor {
       ProcessInfo(ProcessStat _limit): limit(_limit) {}
     };
   private: 
-    const std::string UnixSocketPath = "/tmp/eventfd.sock";
+    const std::string UNIX_SOCKET_PATH = "/tmp/eventfd.sock";
+    const std::string UNIX_EVENT_PATH = "/overuse_events";
+
     int eventFd, unixSocketFd;
     std::unordered_map<std::string, ProcessInfo> processes;
     // int map_tcp_tx, map_tcp_rx, map_udp_tx, map_udp_rx;
@@ -41,6 +45,9 @@ class ProcessMonitor : public IProcessMonitor {
     struct bpf_object *obj;
     int monitorInterval;
     long ticksPerSec, pageSize;
+    SharedRing *ring;
+    std::queue<OveruseEvent> events;
+
     bool initNetStat();
   public:
     ProcessMonitor(const std::vector<ProcessConfig> &configs, int _monitorInterval = 1);

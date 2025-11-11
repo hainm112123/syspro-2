@@ -101,7 +101,7 @@ void ConfigManager::loadConfig() {
 }
 
 void ConfigManager::saveConfig() {
-  //configs = { {"brave.exe", 10, 10, 10}, {"RTSS.exe", 20, 20, 20, 20} };
+  // configs = { {"node", 0, 0, 10, 10}, {"cpptools-srv", 0, 0, 20, 20} };
 #ifdef _WIN32
   HKEY hKey;
   RegCreateKeyEx(HKEY_CURRENT_USER, _T("Software\\syspro-2\\cta"), 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL);
@@ -113,11 +113,14 @@ void ConfigManager::saveConfig() {
 #else
   nlohmann::json jsonConf = configs;
   std::string str_conf = jsonConf.dump();
-  int fd = open(linuxConfigPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-  if (fd < 0) return;
+  int fd = open(linuxConfigPath.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0644);
+  if (fd < 0) {
+    perror("Invalid config fd");
+    return;
+  }
   write(fd, str_conf.data(), str_conf.size());
 #endif
-  //configs.clear();
+  // configs.clear();
 }
 
 std::vector<ProcessConfig> ConfigManager::getConfig() {

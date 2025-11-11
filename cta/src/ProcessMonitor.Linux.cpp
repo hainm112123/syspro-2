@@ -280,9 +280,10 @@ void ProcessMonitor::sample() {
     double memory = getMemory(info);
     double disk = getDisk(info);
     double net = getNet(info);
-    // if (cpu > info.limit.cpu || memory > info.limit.memory || disk > info.limit.disk || net > info.limit.network) {
-    //   std::cout << std::fixed << std::setprecision(2) << "Alert: " << name << " " << info.pids.size() << " use: " << cpu << " " << memory << " " << disk << " " << net << "\n";
-    // }
+    // std::cout << std::fixed << std::setprecision(2) << "Alert: " << name << " " << info.pids.size() << " use: " << cpu << " " << memory << " " << disk << " " << net << "\n";
+    if (cpu > info.limit.cpu || memory > info.limit.memory || disk > info.limit.disk || net > info.limit.network) {
+      std::cout << std::fixed << std::setprecision(2) << "Alert: " << name << " " << info.pids.size() << " use: " << cpu << " " << memory << " " << disk << " " << net << "\n";
+    }
     if (cpu > info.limit.cpu) {
       addEvent({info.pids[0], name, "cpu", cpu, get_timestamp()});
     }
@@ -298,7 +299,7 @@ void ProcessMonitor::sample() {
   }
 }
 
-static void* threadEntry(void *arg) {
+static void* sendEventEntry(void *arg) {
   return static_cast<ProcessMonitor*>(arg)->sendEventFd();
 }
 
@@ -307,19 +308,37 @@ void ProcessMonitor::run() {
   //   return;
   // }
 
-  eventFd = eventfd(0, 0);
+  eventFd = eventfd(0, EFD_SEMAPHORE);
   unixSocketFd = socket(AF_UNIX, SOCK_STREAM, 0);
   pthread_t tEvent;
-  pthread_create(&tEvent, nullptr, &threadEntry, this);
+  pthread_create(&tEvent, nullptr, &sendEventEntry, this);
 
+  int mmapFd = shm_open(UNIX_EVENT_PATH.c_str(), O_CREAT | O_RDWR, 0666);
+  ftruncate(mmapFd, sizeof(SharedRing));
+  ring = (SharedRing *)mmap(nullptr, sizeof(SharedRing), PROT_READ | PROT_WRITE, MAP_SHARED, mmapFd, 0);
+  close(mmapFd);
+
+  ring->head = 0;
+  ring->tail = 0;
+
+  printf("Start monitoring....\n");
+  printf("Press q to quit.\n");
   while (1) {
-    printf("Start monitoring....\n");
-    printf("Press q to quit.\n");
-    int c = getchar();
-    if (c == 'q') break;
-    std::this_thread::sleep_for(std::chrono::seconds(monitorInterval));
+    fd_set fds;
+    FD_ZERO(&fds);
+    FD_SET(STDIN_FILENO, &fds);
+    struct timeval tv = {0L, 0L};
+    int res = select(STDIN_FILENO + 1, &fds, nullptr, nullptr, &tv);
+    if (res > 0 && FD_ISSET(STDIN_FILENO, &fds)) {
+      char input;
+      read(STDIN_FILENO, &input, 1);
+      if (input == 'q') {
+        break;
+      }
+    }
     scan();
     sample();
+    std::this_thread::sleep_for(std::chrono::seconds(monitorInterval));
   }
 
   shutdown(unixSocketFd, SHUT_RD);
@@ -330,11 +349,11 @@ void ProcessMonitor::run() {
 }
 
 void* ProcessMonitor::sendEventFd() {
-  unlink(UnixSocketPath.c_str());
+  unlink(UNIX_SOCKET_PATH.c_str());
   
   struct sockaddr_un addr = {0};
   addr.sun_family = AF_UNIX;
-  strncpy(addr.sun_path, UnixSocketPath.c_str(), sizeof(addr.sun_path) - 1);
+  strncpy(addr.sun_path, UNIX_SOCKET_PATH.c_str(), sizeof(addr.sun_path) - 1);
   bind(unixSocketFd, (struct sockaddr*)&addr, sizeof(addr));
   listen(unixSocketFd, 5);
   int clientfd = accept(unixSocketFd, NULL, NULL);
@@ -368,7 +387,20 @@ void* ProcessMonitor::sendEventFd() {
 }
 
 void ProcessMonitor::addEvent(OveruseEvent event) {
+  uint32_t head = __atomic_load_n(&ring->head, __ATOMIC_RELAXED);
+  uint32_t tail = __atomic_load_n(&ring->tail, __ATOMIC_ACQUIRE);
+  uint32_t next = (tail + 1) & RING_SIZE;
 
+  if (next == head) {
+    events.push(event);
+    return;
+  }
+
+  ring->buffer[tail] = event;
+  __atomic_store_n(&ring->tail, next, __ATOMIC_RELEASE);
+
+  uint64_t signal = 1;
+  write(eventFd, &signal, sizeof(signal));
 }
 
 #endif

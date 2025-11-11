@@ -10,6 +10,9 @@
 #include <chrono>
 #include <sstream>
 #include <iomanip>
+#include <stdint.h>
+
+const int RING_SIZE = 1024;
 
 struct ProcessConfig {
   std::string name;
@@ -44,7 +47,10 @@ inline std::string get_timestamp() {
 #ifdef _WIN32
 std::wstring stringToWstring(const std::string& str);
 std::string wstringToString(const std::wstring& wstr);
+#endif
 
+#pragma pack(push, 1)
+#ifdef _WIN32
 struct OveruseEvent {
   DWORD pid;
   std::wstring name;
@@ -61,3 +67,11 @@ struct OveruseEvent {
   std::string time;
 };
 #endif
+
+struct SharedRing {
+  uint32_t head;
+  uint32_t tail;
+  OveruseEvent buffer[RING_SIZE];
+};
+
+#pragma pack(pop)

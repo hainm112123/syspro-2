@@ -16,15 +16,8 @@ int main() {
 		std::cout << "Failed\n";
 	}
 	EventLogger logger("tmp.txt");
-#ifndef _WIN32
-	logger.getEventFd();
-#endif
-	// std::string pname = "brave.exe";
-	// OveruseEvent event1 = { 1, pname, "cpu", 30, "2025-11-06 13:24:18" };
-	// OveruseEvent event2 = { 1, pname, "ram", 1000, "2025-11-06 13:24:18" };
-	// logger.log(event1);
-	// logger.log(event2);
-	// logger.flush();
+	logger.run();
+	
 
 	return 0;
 }

@@ -8,13 +8,18 @@
 #include <poll.h>
 #include <thread>
 #include <chrono>
+#include <sys/mman.h>
 
 class EventLogger: public IEventLogger {
 private:
-  const std::string UnixSocketPath = "/tmp/eventfd.sock";
+  const std::string UNIX_SOCKET_PATH = "/tmp/eventfd.sock";
+  const std::string UNIX_EVENT_PATH = "/overuse_events";
+
   int fd;
   std::vector<char> buffer;
-  int eventfd;
+  int eventFd;
+  SharedRing *ring;
+
 public:
   EventLogger(const std::string path) {
     fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -27,5 +32,7 @@ public:
   void log(const OveruseEvent &event);
   void flush();
   void getEventFd();
+  void init();
   void getEvents();
+  void run();
 };
