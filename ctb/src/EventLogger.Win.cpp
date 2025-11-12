@@ -17,7 +17,7 @@ void EventLogger::flush() {
 }
 
 void EventLogger::getEvents() {
-	WaitForSingleObject(hEvent, INFINITE);
+	DWORD result = WaitForSingleObject(hEvent, 2000);
 	while (1) {
 		LONG head = ring->head;
 		LONG tail = ring->tail;
