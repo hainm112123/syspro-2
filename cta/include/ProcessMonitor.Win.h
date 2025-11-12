@@ -23,6 +23,9 @@
 #include <wmistr.h>
 #include <conio.h>
 #include <tchar.h>
+#include <tdh.h>
+#include <evntcons.h>
+#pragma comment(lib, "tdh.lib")
 #pragma comment(lib, "advapi32.lib")
 
 class ProcessMonitor: public IProcessMonitor {

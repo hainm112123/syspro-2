@@ -6,7 +6,8 @@
 #include <chrono>  
 #define INITGUID
 
-const static GUID DiskIO_Provider_GUID = { 0x9c1f9f5e, 0x5645, 0x474f, { 0x81, 0x7f, 0x11, 0x93, 0x4a, 0x3c, 0xa0, 0xe0 } };
+static const GUID GUID_DISK_IO = { 0x9d1d5d37, 0x5a7f, 0x4f3f, {0x89,0x65,0xe3,0x59,0x0d,0x6d,0x14,0xb0} };
+static const GUID KERNEL_FILE_GUID = { 0xEDD08927, 0x9CC4, 0x4E65,{ 0xB3,0x3D,0xF1,0x2E,0x4F,0x4E,0xED,0xE0 } };
 
 ProcessMonitor::ProcessMonitor(const std::vector<ProcessConfig> &configs, int _monitorInterval): monitorInterval(_monitorInterval) {
   SetConfigs(configs);
@@ -68,42 +69,78 @@ static void getStats(ProcessMonitor::ProcessInfo& info, ULONGLONG sysDelta, doub
   info.lastProcTime = procTime;
 }
 
-void WINAPI ProcessEvent(PEVENT_TRACE pEvent);
-static void startEtwMonitoring() {
-  ULONG status = ERROR_SUCCESS;
-  EVENT_TRACE_LOGFILE trace;
-  TRACE_LOGFILE_HEADER* pHeader = &trace.LogfileHeader;
-  TRACEHANDLE hTrace = 0;
+//...................................ETW.....................................................................................
+VOID WINAPI EventRecordCallback(PEVENT_RECORD pEventRecord) {
+  if (pEventRecord->EventHeader.ProviderId != KERNEL_FILE_GUID)
+    return;
 
-  ZeroMemory(&trace, sizeof(EVENT_TRACE_LOGFILE));
-  trace.LogFileName = (LPWSTR)L"test.etl";
-  trace.EventCallback = (PEVENT_CALLBACK)(ProcessEvent);
+  DWORD pid = pEventRecord->EventHeader.ProcessId;
+  ULONG ioSize = 0;
 
-  hTrace = OpenTrace(&trace);
-  if ((TRACEHANDLE)INVALID_HANDLE_VALUE == hTrace) {
-    wprintf(L"OpenTrace failed with %lu\n", GetLastError());
-    goto cleanup;
+  // Modern 7-argument TdhGetProperty
+  PROPERTY_DATA_DESCRIPTOR desc;
+  ZeroMemory(&desc, sizeof(desc));
+  desc.PropertyName = (ULONGLONG)L"Size";
+  desc.ArrayIndex = ULONG_MAX;
+
+  TDHSTATUS status = TdhGetProperty(
+    pEventRecord,   // PEVENT_RECORD
+    0,              // TdhContextCount = 0
+    nullptr,        // pTdhContext = nullptr
+    1,              // PropertyDataCount
+    &desc,          // PropertyDataDescriptor
+    sizeof(ioSize), // BufferSize
+    (PBYTE)&ioSize  // output buffer
+  );
+
+  if (status != ERROR_SUCCESS) {
+    return;
   }
 
-  status = ProcessTrace(&hTrace, 1, 0, 0);
-  if (status != ERROR_SUCCESS && status != ERROR_CANCELLED) {
-    wprintf(L"ProcessTrace failed with %lu\n", status);
-    goto cleanup;
+  // Opcodes: 10 = Read, 11 = Write
+  if (pEventRecord->EventHeader.EventDescriptor.Opcode == 10) {
+    std::cout << "Read: " << ioSize << "\n";
   }
-
-cleanup:
-  if ((TRACEHANDLE)INVALID_HANDLE_VALUE != hTrace) {
-    status = CloseTrace(hTrace);
+  else if (pEventRecord->EventHeader.EventDescriptor.Opcode == 11) {
+    std::cout << "Write: " << ioSize << "\n";
   }
 }
-void WINAPI ProcessEvent(PEVENT_TRACE pEvent) {
-  if (IsEqualGUID(pEvent->Header.Guid, EventTraceGuid) && pEvent->Header.Class.Type == EVENT_TRACE_TYPE_INFO) {
-    ; // Skip this event.
+
+static void startETW() {
+  TRACEHANDLE hSession = 0;
+
+  // Setup real-time session properties
+  ULONG bufferSize = sizeof(EVENT_TRACE_PROPERTIES) + 1024;
+  EVENT_TRACE_PROPERTIES* pSessionProperties = (EVENT_TRACE_PROPERTIES*)malloc(bufferSize);
+  ZeroMemory(pSessionProperties, bufferSize);
+  pSessionProperties->Wnode.BufferSize = bufferSize;
+  pSessionProperties->Wnode.ClientContext = 1;
+  pSessionProperties->Wnode.Flags = WNODE_FLAG_TRACED_GUID;
+  wcscpy_s((wchar_t*)(pSessionProperties + 1), 1024, KERNEL_LOGGER_NAME);
+  pSessionProperties->LogFileMode = EVENT_TRACE_REAL_TIME_MODE;
+
+  ULONG status = StartTrace(&hSession, KERNEL_LOGGER_NAME, pSessionProperties);
+  if (status != ERROR_SUCCESS) {
+    std::cout << "StartTrace failed: " << status << "\n";
+    return;
   }
-  else {
-    
+
+  // Open real-time trace
+  EVENT_TRACE_LOGFILE logFile = {};
+  logFile.LoggerName = (LPWSTR)KERNEL_LOGGER_NAME;
+  logFile.ProcessTraceMode = PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD;
+  logFile.EventRecordCallback = EventRecordCallback;
+
+  TRACEHANDLE hTrace = OpenTrace(&logFile);
+  if (hTrace == INVALID_PROCESSTRACE_HANDLE) {
+    std::cout << "OpenTrace failed\n";
+    return;
   }
+
+  ProcessTrace(&hTrace, 1, nullptr, nullptr);
 }
+
+//..................main....................................................................................................
 
 void ProcessMonitor::scan() {
   for (auto &[name, info]: processes) info.pids.clear();
@@ -144,6 +181,9 @@ void ProcessMonitor::sample() {
 }
 
 void ProcessMonitor::run() {
+  startETW();
+  return;
+
   HANDLE hMap = CreateFileMapping(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, sizeof(SharedRing), FILE_MAP_NAME.c_str());
   if (!hMap) {
     printf("Create file mapping failed\n");
@@ -167,7 +207,6 @@ void ProcessMonitor::run() {
 
   printf("Start monitoring....\n");
   printf("Press q to quit.\n");
-  //startEtwMonitoring();
   while (1) {
     if (_kbhit()) {
       char c = _getch();
