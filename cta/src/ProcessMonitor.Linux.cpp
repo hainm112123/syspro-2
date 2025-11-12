@@ -285,16 +285,16 @@ void ProcessMonitor::sample() {
       std::cout << std::fixed << std::setprecision(2) << "Alert: " << name << " " << info.pids.size() << " use: " << cpu << " " << memory << " " << disk << " " << net << "\n";
     }
     if (cpu > info.limit.cpu) {
-      addEvent({info.pids[0], name, "cpu", cpu, get_timestamp()});
+      addEvent(info.pids[0], name, "cpu", cpu, get_timestamp());
     }
     if (memory > info.limit.memory) {
-      addEvent({info.pids[0], name, "memory", memory, get_timestamp()});
+      addEvent(info.pids[0], name, "memory", memory, get_timestamp());
     }
     if (disk > info.limit.disk) {
-      addEvent({info.pids[0], name, "disk", disk, get_timestamp()});
+      addEvent(info.pids[0], name, "disk", disk, get_timestamp());
     }
     if (net > info.limit.network) {
-      addEvent({info.pids[0], name, "network", net, get_timestamp()});
+      addEvent(info.pids[0], name, "network", net, get_timestamp());
     }
   }
 }
@@ -313,10 +313,10 @@ void ProcessMonitor::run() {
   pthread_t tEvent;
   pthread_create(&tEvent, nullptr, &sendEventEntry, this);
 
-  int mmapFd = shm_open(UNIX_EVENT_PATH.c_str(), O_CREAT | O_RDWR, 0666);
-  ftruncate(mmapFd, sizeof(SharedRing));
+  mmapFd = shm_open(UNIX_EVENT_PATH.c_str(), O_CREAT | O_RDWR, 0666);
+  bool isCreator = (errno != EEXIST);
+  if (isCreator) ftruncate(mmapFd, sizeof(SharedRing));
   ring = (SharedRing *)mmap(nullptr, sizeof(SharedRing), PROT_READ | PROT_WRITE, MAP_SHARED, mmapFd, 0);
-  close(mmapFd);
 
   ring->head = 0;
   ring->tail = 0;
@@ -345,7 +345,11 @@ void ProcessMonitor::run() {
   close(unixSocketFd);
   printf("Unix Socket closed\n");
   pthread_join(tEvent, nullptr);
+  
+  munmap(ring, sizeof(SharedRing));
+  close(mmapFd);
   close(eventFd);
+  if (isCreator) shm_unlink(UNIX_EVENT_PATH.c_str());
 }
 
 void* ProcessMonitor::sendEventFd() {
@@ -363,10 +367,11 @@ void* ProcessMonitor::sendEventFd() {
 
   struct msghdr msg = {0};
   char buf[CMSG_SPACE(sizeof(eventFd))];
-  char dummy = '*';
-  struct iovec io = {.iov_base = &dummy, .iov_len = 1};
-  msg.msg_iov = &io;
-  msg.msg_iovlen = 1;
+  memset(buf, 0, sizeof(buf));
+  // char dummy = '*';
+  // struct iovec io = {.iov_base = &dummy, .iov_len = 1};
+  // msg.msg_iov = &io;
+  // msg.msg_iovlen = 1;
   msg.msg_control = buf;
   msg.msg_controllen = sizeof(buf);
 
@@ -374,28 +379,45 @@ void* ProcessMonitor::sendEventFd() {
   cmsg->cmsg_len = CMSG_LEN(sizeof(eventFd));
   cmsg->cmsg_level = SOL_SOCKET;
   cmsg->cmsg_type = SCM_RIGHTS;
-  *((int *) CMSG_DATA(cmsg)) = eventFd;
+  // *((int *) CMSG_DATA(cmsg)) = eventFd;
+  memcpy(CMSG_DATA(cmsg), &eventFd, sizeof(eventFd));
+  msg.msg_controllen = cmsg->cmsg_len;
 
   // printf("unixSocketFd: %d, clientfd: %d\n", unixSocketFd, clientfd);
   if (sendmsg(clientfd, &msg, 0) == -1) {
     perror("Send event fd");
   }
+  printf("Sent event fd: %d\n", eventFd);
 
   close(clientfd);
 
   return nullptr;
 }
 
-void ProcessMonitor::addEvent(OveruseEvent event) {
-  uint32_t head = __atomic_load_n(&ring->head, __ATOMIC_RELAXED);
-  uint32_t tail = __atomic_load_n(&ring->tail, __ATOMIC_ACQUIRE);
-  uint32_t next = (tail + 1) & RING_SIZE;
+void ProcessMonitor::addEvent(const pid_t &pid, const std::string &name, const std::string &type, const double &value, const std::string &timestamp) {
+  uint32_t head = __atomic_load_n(&ring->head, __ATOMIC_ACQUIRE);
+  uint32_t tail = __atomic_load_n(&ring->tail, __ATOMIC_RELAXED);
+  uint32_t next = (tail + 1) & (RING_SIZE - 1);
 
+  OveruseEvent event;
+  event.pid = (uint32_t)pid;
+  event.value = value;
+  int namelen = std::min(EVENT_NAME_SIZE - 1, (int)name.size());
+  int typelen = std::min(EVENT_TYPE_SIZE - 1, (int)type.size());
+  int timelen = std::min(EVENT_TIME_SIZE - 1, (int)timestamp.size());
+  memcpy(event.name, name.data(), namelen);
+  memcpy(event.type, type.data(), typelen);
+  memcpy(event.time, timestamp.data(), timelen);
+  event.name[namelen] = '\0';
+  event.type[typelen] = '\0';
+  event.time[timelen] = '\0';
+  
   if (next == head) {
     events.push(event);
     return;
   }
 
+  printf("Head: %d, Tail: %d\n", head, tail);
   ring->buffer[tail] = event;
   __atomic_store_n(&ring->tail, next, __ATOMIC_RELEASE);
 

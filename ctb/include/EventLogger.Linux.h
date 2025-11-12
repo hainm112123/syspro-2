@@ -17,8 +17,8 @@ private:
 
   int fd;
   std::vector<char> buffer;
-  int eventFd;
-  SharedRing *ring;
+  int eventFd = -1, mmapFd = -1;
+  SharedRing *ring = nullptr;
 
 public:
   EventLogger(const std::string path) {
@@ -32,7 +32,6 @@ public:
   void log(const OveruseEvent &event);
   void flush();
   void getEventFd();
-  void init();
   void getEvents();
   void run();
 };

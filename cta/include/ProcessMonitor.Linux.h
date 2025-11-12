@@ -47,6 +47,7 @@ class ProcessMonitor : public IProcessMonitor {
     long ticksPerSec, pageSize;
     SharedRing *ring;
     std::queue<OveruseEvent> events;
+    int mmapFd = -1;
 
     bool initNetStat();
   public:
@@ -58,7 +59,7 @@ class ProcessMonitor : public IProcessMonitor {
     void sample();
     void run();
     void* sendEventFd();
-    void addEvent(OveruseEvent event);
+    void addEvent(const pid_t &pid, const std::string &name, const std::string &type, const double &value, const std::string &timestamp);
 };
 
 #endif

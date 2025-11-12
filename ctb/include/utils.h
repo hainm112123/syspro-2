@@ -12,6 +12,9 @@
 #include <stdint.h>
 
 const int RING_SIZE = 1024;
+const int EVENT_NAME_SIZE = 32;
+const int EVENT_TYPE_SIZE = 16;
+const int EVENT_TIME_SIZE = 32;
 
 struct ProcessConfig {
   std::string name;
@@ -34,8 +37,6 @@ std::wstring stringToWstring(const std::string& str);
 std::string wstringToString(const std::wstring& wstr);
 #endif
 
-
-#pragma pack(push, 1)
 #ifdef _WIN32
 struct OveruseEvent {
   DWORD pid;
@@ -46,17 +47,16 @@ struct OveruseEvent {
 };
 #else 
 struct OveruseEvent {
-  pid_t pid;
-  std::string name;
-  std::string type;
+  uint32_t pid;
+  char name[EVENT_NAME_SIZE];
+  char type[EVENT_NAME_SIZE];
   double value;
-  std::string time;
+  char time[EVENT_TIME_SIZE];
 };
-#endif
 
 struct SharedRing {
   uint32_t head;
   uint32_t tail;
   OveruseEvent buffer[RING_SIZE];
-};
-#pragma pack(pop)
+} __attribute__((aligned(8)));
+#endif
