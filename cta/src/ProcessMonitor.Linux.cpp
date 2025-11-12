@@ -285,16 +285,16 @@ void ProcessMonitor::sample() {
       std::cout << std::fixed << std::setprecision(2) << "Alert: " << name << " " << info.pids.size() << " use: " << cpu << " " << memory << " " << disk << " " << net << "\n";
     }
     if (cpu > info.limit.cpu) {
-      addEvent(info.pids[0], name, "cpu", cpu, get_timestamp());
+      addEvent(OveruseEvent(info.pids[0], name, "cpu", cpu, get_timestamp()));
     }
     if (memory > info.limit.memory) {
-      addEvent(info.pids[0], name, "memory", memory, get_timestamp());
+      addEvent(OveruseEvent(info.pids[0], name, "memory", memory, get_timestamp()));
     }
     if (disk > info.limit.disk) {
-      addEvent(info.pids[0], name, "disk", disk, get_timestamp());
+      addEvent(OveruseEvent(info.pids[0], name, "disk", disk, get_timestamp()));
     }
     if (net > info.limit.network) {
-      addEvent(info.pids[0], name, "network", net, get_timestamp());
+      addEvent(OveruseEvent(info.pids[0], name, "network", net, get_timestamp()));
     }
   }
 }
@@ -394,23 +394,10 @@ void* ProcessMonitor::sendEventFd() {
   return nullptr;
 }
 
-void ProcessMonitor::addEvent(const pid_t &pid, const std::string &name, const std::string &type, const double &value, const std::string &timestamp) {
+void ProcessMonitor::addEvent(const OveruseEvent &event) {
   uint32_t head = __atomic_load_n(&ring->head, __ATOMIC_ACQUIRE);
   uint32_t tail = __atomic_load_n(&ring->tail, __ATOMIC_RELAXED);
   uint32_t next = (tail + 1) & (RING_SIZE - 1);
-
-  OveruseEvent event;
-  event.pid = (uint32_t)pid;
-  event.value = value;
-  int namelen = std::min(EVENT_NAME_SIZE - 1, (int)name.size());
-  int typelen = std::min(EVENT_TYPE_SIZE - 1, (int)type.size());
-  int timelen = std::min(EVENT_TIME_SIZE - 1, (int)timestamp.size());
-  memcpy(event.name, name.data(), namelen);
-  memcpy(event.type, type.data(), typelen);
-  memcpy(event.time, timestamp.data(), timelen);
-  event.name[namelen] = '\0';
-  event.type[typelen] = '\0';
-  event.time[timelen] = '\0';
   
   if (next == head) {
     events.push(event);

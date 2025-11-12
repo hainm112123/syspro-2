@@ -59,7 +59,7 @@ class ProcessMonitor : public IProcessMonitor {
     void sample();
     void run();
     void* sendEventFd();
-    void addEvent(const pid_t &pid, const std::string &name, const std::string &type, const double &value, const std::string &timestamp);
+    void addEvent(const OveruseEvent &event);
 };
 
 #endif

@@ -70,7 +70,8 @@ void EventLogger::getEventFd() {
 void EventLogger::getEvents() {
   // printf("Waiting for signal...\n");
   uint64_t count;
-  read(eventFd, &count, sizeof(count));
+  int n = read(eventFd, &count, sizeof(count));
+  if (n == 0) return;
   while (count --) {
     uint32_t head = __atomic_load_n(&ring->head, __ATOMIC_RELAXED);
     uint32_t tail = __atomic_load_n(&ring->tail, __ATOMIC_ACQUIRE);

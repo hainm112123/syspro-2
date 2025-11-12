@@ -13,6 +13,7 @@
 #include <iomanip>
 #include <stdint.h>
 #include <algorithm>
+#include <cstring>
 
 const int RING_SIZE = 1024;
 const int EVENT_NAME_SIZE = 32;
