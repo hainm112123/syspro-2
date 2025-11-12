@@ -25,8 +25,10 @@ class ConfigManager {
   std::vector<ProcessConfig> configs;
 public:
   ConfigManager() {
-    mkdir("/etc/syspro-2", 0755);
-    mkdir("/etc/syspro-2/cta", 0755);
+    #ifndef _WIN32
+      mkdir("/etc/syspro-2", 0755);
+      mkdir("/etc/syspro-2/cta", 0755);
+    #endif
   }
   ~ConfigManager() {}
 

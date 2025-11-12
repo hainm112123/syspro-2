@@ -5,6 +5,7 @@
 #define UNICODE
 #define _UNICODE
 #include "utils.h"
+#include "IProcessMonitor.h"
 #include <windows.h>
 #include <psapi.h>
 #include <iostream>
@@ -20,22 +21,29 @@
 #include <evntprov.h>
 #include <wbemidl.h>
 #include <wmistr.h>
+#include <conio.h>
+#include <tchar.h>
 #pragma comment(lib, "advapi32.lib")
 
-class ProcessMonitor {
+class ProcessMonitor: public IProcessMonitor {
 public:
   struct ProcessInfo {
     std::vector<DWORD> pids;
     ULONGLONG lastProcTime = 0, lastTotalIO = 0;
     std::chrono::steady_clock::time_point lastTime;
     ProcessStat limit;
+
     ProcessInfo() {}
     ProcessInfo(ProcessStat _limit) : limit(_limit) {}
   };
 private:
+  const std::wstring FILE_MAP_NAME = _TEXT("SharedOveruseEventRing");
+  const std::wstring WIN_EVENT_NAME = _TEXT("SharedRingEvent");
   std::unordered_map<std::wstring, ProcessInfo> processes;
   int monitorInterval;
   ULONGLONG lastSysTime = 0;
+  SharedRing* ring = nullptr;
+  HANDLE hEvent;
 
 public:
   ProcessMonitor(const std::vector<ProcessConfig>& configs, int _monitorInterval = 1);
@@ -45,6 +53,7 @@ public:
   void scan();
   void sample();
   void run();
+  void addEvent(const OveruseEvent &event);
 };
 
 

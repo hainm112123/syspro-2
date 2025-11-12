@@ -3,6 +3,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define _UNICODE
 #define UNICODE
+#define NOMINMAX
 #include <Windows.h>
 #endif
 #include <string>
@@ -11,6 +12,7 @@
 #include <sstream>
 #include <iomanip>
 #include <stdint.h>
+#include <algorithm>
 
 const int RING_SIZE = 1024;
 const int EVENT_NAME_SIZE = 32;
@@ -52,23 +54,40 @@ std::wstring stringToWstring(const std::string& str);
 std::string wstringToString(const std::wstring& wstr);
 #endif
 
-#ifdef _WIN32
-struct OveruseEvent {
-  DWORD pid;
-  std::wstring name;
-  std::string type;
-  double value;
-  std::string time;
-};
-#else 
 struct OveruseEvent {
   uint32_t pid;
   char name[EVENT_NAME_SIZE];
   char type[EVENT_NAME_SIZE];
   double value;
   char time[EVENT_TIME_SIZE];
+
+  OveruseEvent() {}
+#ifdef _WIN32
+  OveruseEvent(const DWORD& _pid, const std::string& _name, const std::string& _type, const double& _value, const std::string& _timestamp) {
+#else
+  OveruseEvent(const pid_t &_pid, const std::string &_name, const std::string &_type, const double &_value, const std::string &_timestamp) {
+#endif
+    pid = _pid;
+    value = _value;
+    int namelen = std::min(EVENT_NAME_SIZE - 1, (int)_name.size());
+    int typelen = std::min(EVENT_TYPE_SIZE - 1, (int)_type.size());
+    int timelen = std::min(EVENT_TIME_SIZE - 1, (int)_timestamp.size());
+    memcpy(name, _name.data(), namelen);
+    memcpy(type, _type.data(), typelen);
+    memcpy(time, _timestamp.data(), timelen);
+    name[namelen] = '\0';
+    type[typelen] = '\0';
+    time[timelen] = '\0';
+  }
 };
 
+#ifdef _WIN32
+struct SharedRing {
+  volatile LONG head;
+  volatile LONG tail;
+  OveruseEvent buffer[RING_SIZE];
+} __declspec(align(8));
+#else 
 struct SharedRing {
   uint32_t head;
   uint32_t tail;

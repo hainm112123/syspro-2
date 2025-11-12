@@ -1,6 +1,6 @@
 [
   {
-    "process": "node",
+    "process": "brave.exe",
     "cpu": 0,
     "memory": 200,
     "disk": 1,

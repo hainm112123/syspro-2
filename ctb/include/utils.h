@@ -37,15 +37,6 @@ std::wstring stringToWstring(const std::string& str);
 std::string wstringToString(const std::wstring& wstr);
 #endif
 
-#ifdef _WIN32
-struct OveruseEvent {
-  DWORD pid;
-  std::wstring name;
-  std::string type;
-  double value;
-  std::string time;
-};
-#else 
 struct OveruseEvent {
   uint32_t pid;
   char name[EVENT_NAME_SIZE];
@@ -54,6 +45,13 @@ struct OveruseEvent {
   char time[EVENT_TIME_SIZE];
 };
 
+#ifdef _WIN32
+struct SharedRing {
+  volatile LONG head;
+  volatile LONG tail;
+  OveruseEvent buffer[RING_SIZE];
+} __declspec(align(8));
+#else 
 struct SharedRing {
   uint32_t head;
   uint32_t tail;

@@ -134,17 +134,66 @@ void ProcessMonitor::sample() {
   for (auto &[name, info]: processes) {
     double cpu = 0, memory = 0, disk = 0;
     getStats(info, sysDelta, cpu, memory, disk);
-    std::cout << wstringToString(name) << " " << info.pids.size() << " " << cpu << " " << memory << " " << disk << "\n";
+    if (cpu > info.limit.cpu || memory > info.limit.memory || disk > info.limit.disk) {
+      std::cout << wstringToString(name) << " " << info.pids.size() << " " << cpu << " " << memory << " " << disk << "\n";
+    }
+    if (cpu > info.limit.cpu) addEvent(OveruseEvent(info.pids[0], wstringToString(name), "cpu", cpu, get_timestamp()));
+    if (memory > info.limit.memory) addEvent(OveruseEvent(info.pids[0], wstringToString(name), "memory", memory, get_timestamp()));
+    if (disk > info.limit.disk) addEvent(OveruseEvent(info.pids[0], wstringToString(name), "disk", disk, get_timestamp()));
   }
 }
 
 void ProcessMonitor::run() {
+  HANDLE hMap = CreateFileMapping(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, sizeof(SharedRing), FILE_MAP_NAME.c_str());
+  if (!hMap) {
+    printf("Create file mapping failed\n");
+    return;
+  }
+  ring = (SharedRing*)MapViewOfFile(hMap, FILE_MAP_ALL_ACCESS, 0, 0, 0);
+  if (!ring) {
+    printf("Map view of file failed\n");
+    CloseHandle(hMap);
+    return;
+  }
+  hEvent = CreateEvent(nullptr, FALSE, FALSE, WIN_EVENT_NAME.c_str());
+  if (!hEvent) {
+    printf("Create event failed\n");
+    UnmapViewOfFile(ring);
+    CloseHandle(hMap);
+    return;
+  }
+  ring->head = 0;
+  ring->tail = 0;
+
+  printf("Start monitoring....\n");
+  printf("Press q to quit.\n");
   //startEtwMonitoring();
   while (1) {
-    std::this_thread::sleep_for(std::chrono::seconds(monitorInterval));
+    if (_kbhit()) {
+      char c = _getch();
+      if (c == 'q') break;
+    }
     scan();
     sample();
+    std::this_thread::sleep_for(std::chrono::seconds(monitorInterval));
   }
+
+  CloseHandle(hEvent);
+  UnmapViewOfFile(ring);
+  CloseHandle(hMap);
+}
+
+void ProcessMonitor::addEvent(const OveruseEvent& event) {
+  //printf("{\"pid\":%d,\"name\":\"%s\",\"type\":%s,\"value\":%.2f,\"time\":%s}\n", event.pid, event.name, event.type, event.value, event.time);
+  LONG head = ring->head;
+  LONG tail = ring->tail;
+  LONG next = (tail + 1) & (RING_SIZE - 1);
+  if (next == head) {
+    return;
+  }
+  ring->buffer[tail] = event;
+  InterlockedExchange(&ring->tail, next);
+  SetEvent(hEvent);
 }
 
 #endif

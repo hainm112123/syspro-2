@@ -39,7 +39,7 @@ bool ConfigManager::getNewConfig() {
 
 #ifdef _WIN32
   if (connect(client, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
-    perror("connect failed\n");
+    printf("Connection failed: %d", WSAGetLastError());
     return false;
   }
 #else

@@ -5,12 +5,12 @@ std::string ConfigModifier::loadConfigAsString() {
 	auto path = stringToWstring(configFilePath);
 	HANDLE hFile = CreateFile(path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (hFile == INVALID_HANDLE_VALUE) {
-		perror("INVALID_HANDLE_VALUE");
+		printf("INVALID_HANDLE_VALUE: %ul", GetLastError());
 		return "";
 	}
 	DWORD fileSize = GetFileSize(hFile, NULL);
 	if (fileSize == INVALID_FILE_SIZE) {
-		perror("INVALID_FILE_SIZE");
+		printf("INVALID_FILE_SIZE: %ul", GetLastError());
 		CloseHandle(hFile);
 		return "";
 	}
@@ -18,7 +18,7 @@ std::string ConfigModifier::loadConfigAsString() {
 	std::vector<char> buffer(fileSize);
 	DWORD bytesRead = 0;
 	if (!ReadFile(hFile, buffer.data(), fileSize, &bytesRead, NULL)) {
-		perror("READ FAILED");
+		printf("READ FAILED: %ul", GetLastError());
 		CloseHandle(hFile);
 		return "";
 	}
@@ -75,15 +75,7 @@ bool ConfigModifier::start() {
 	//std::cout << static_cast<uint32_t>(config.size()) << "\n";
 	uint32_t len = htonl(static_cast<uint32_t>(config.size()));
 	//std::cout << len << "\n";
-#ifdef _WIN32
-	SOCKET client = accept(server, nullptr, nullptr);
-	send(client, (char*)&len, sizeof(len), 0);
-	send(client, config.c_str(), config.size(), 0);
 
-	closesocket(client);
-	closesocket(server);
-	WSACleanup();
-#else
 	fd_set fds;
 	FD_ZERO(&fds);
 	FD_SET(server, &fds);
@@ -91,6 +83,21 @@ bool ConfigModifier::start() {
 	tv.tv_sec = 10;
 	tv.tv_usec = 0;
 	printf("Waiting for config socket connection...\n");
+
+#ifdef _WIN32
+	int result = select(0, &fds, nullptr, nullptr, &tv);
+	if (result > 0 && FD_ISSET(server, &fds)) {
+		SOCKET client = accept(server, nullptr, nullptr);
+		send(client, (char*)&len, sizeof(len), 0);
+		send(client, config.c_str(), config.size(), 0);
+		closesocket(client);
+	}
+	else {
+		printf("No incoming connection\n");
+	}
+	closesocket(server);
+	WSACleanup();
+#else
 	int result = select(server + 1, &fds, nullptr, nullptr, &tv);
 	if (result > 0 && FD_ISSET(server, &fds)) {
 		int client = accept(server, nullptr, nullptr);
