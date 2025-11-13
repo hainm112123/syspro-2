@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <map>
 #include <string>
+#include <queue>
 #include <vector>
 #include <chrono>
 #include <thread>
@@ -50,12 +51,14 @@ public:
 private:
   const std::wstring FILE_MAP_NAME = _TEXT("SharedOveruseEventRing");
   const std::wstring WIN_EVENT_NAME = _TEXT("SharedRingEvent");
+  const int MAX_QUEUE_SIZE = 4096;
   std::unordered_map<std::wstring, ProcessInfo> processes;
   std::map<DWORD, ProcessInfo*> procInfo;
   int monitorInterval;
   ULONGLONG lastSysTime = 0;
   SharedRing* ring = nullptr;
   HANDLE hEvent;
+  std::queue<OveruseEvent> events;
 
 public:
   ProcessMonitor(const std::vector<ProcessConfig>& configs, int _monitorInterval = 1);

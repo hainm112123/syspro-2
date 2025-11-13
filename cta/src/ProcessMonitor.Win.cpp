@@ -227,11 +227,25 @@ void ProcessMonitor::addEvent(const OveruseEvent& event) {
   LONG tail = ring->tail;
   LONG next = (tail + 1) & (RING_SIZE - 1);
   if (next == head) {
+    if ((int)events.size() < MAX_QUEUE_SIZE) events.push(event);
     return;
   }
-  ring->buffer[tail] = event;
-  InterlockedExchange(&ring->tail, next);
-  SetEvent(hEvent);
+  if (!events.empty()) {
+    events.push(event);
+    while (next != head && !events.empty()) {
+      ring->buffer[tail] = events.front();
+      events.pop();
+      tail = next;
+      next = (tail + 1) & (RING_SIZE - 1);
+    }
+    InterlockedExchange(&ring->tail, tail);
+    SetEvent(hEvent);
+  }
+  else {
+    ring->buffer[tail] = event;
+    InterlockedExchange(&ring->tail, next);
+    SetEvent(hEvent);
+  }
 }
 
 #endif
