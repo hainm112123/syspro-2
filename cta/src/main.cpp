@@ -8,7 +8,7 @@
 
 int main() {
     ConfigManager cnfMgr;
-    // cnfMgr.saveConfig();
+    cnfMgr.saveConfig();
     auto configs = cnfMgr.getConfig();
     for (auto &conf: configs) std::cout << conf.name << " " << conf.cpu << "\n";
     ProcessMonitor monitor(configs, 1);
