@@ -4,11 +4,6 @@
 #include <iomanip>
 #include <thread>
 #include <chrono>  
-#define INITGUID
-
-static const GUID GUID_DISK_IO = { 0x9d1d5d37, 0x5a7f, 0x4f3f, {0x89,0x65,0xe3,0x59,0x0d,0x6d,0x14,0xb0} };
-static const GUID KERNEL_FILE_GUID = { 0xEDD08927, 0x9CC4, 0x4E65,{ 0xB3,0x3D,0xF1,0x2E,0x4F,0x4E,0xED,0xE0 } };
-static const GUID DiskIoGuid = { 0x9e814aad, 0x3204, 0x11d2, {0x9a, 0x82, 0x00, 0x60, 0x08, 0xa8, 0x69, 0x39} };
 
 ProcessMonitor::ProcessMonitor(const std::vector<ProcessConfig> &configs, int _monitorInterval): monitorInterval(_monitorInterval) {
   SetConfigs(configs);
@@ -37,7 +32,7 @@ static ULONGLONG fileTimeToULL(const FILETIME &ft) {
   return ((ULONGLONG)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
 }
 
-static void getStats(ProcessMonitor::ProcessInfo& info, ULONGLONG sysDelta, double &cpu, double &memory, double &disk) {
+static void getStats(ProcessMonitor::ProcessInfo& info, ULONGLONG sysDelta, double &cpu, double &memory, double &disk, double &network) {
   ULONGLONG procTime = 0;
   ULONGLONG totalIO = 0;
   for (auto& pid : info.pids) {
@@ -54,10 +49,10 @@ static void getStats(ProcessMonitor::ProcessInfo& info, ULONGLONG sysDelta, doub
       procTime += fileTimeToULL(kernel) + fileTimeToULL(user);
     }
 
-    IO_COUNTERS io;
+    /*IO_COUNTERS io;
     if (GetProcessIoCounters(hProcess, &io)) {
       totalIO += io.ReadTransferCount + io.WriteTransferCount;
-    }
+    }*/
 
     CloseHandle(hProcess);
   }
@@ -66,100 +61,54 @@ static void getStats(ProcessMonitor::ProcessInfo& info, ULONGLONG sysDelta, doub
   std::chrono::duration<double> elapsed = now - info.lastTime;
   cpu = (sysDelta > 0 && procTime > 0) ? 100.0 * (double)(procTime - info.lastProcTime) / sysDelta : 0.0;
   memory /= (1024.0 * 1024);
-  disk = (double)(totalIO - info.lastTotalIO) / (1024.0 * 1024 * elapsed.count());
+  double curIo = info.curIo, curNet = info.curNet;
+  disk = (double)(curIo - info.lastIo) / (1024.0 * 1024 * elapsed.count());
+  network = (double)(curNet - info.lastNet) / (1024.0 * elapsed.count());
+  info.lastIo = curIo;
+  info.lastNet = curNet;
   info.lastProcTime = procTime;
 }
 
 //...................................ETW.....................................................................................
-VOID WINAPI EventRecordCallback(PEVENT_RECORD pEventRecord) {
-  std::wcout << L"Some Event: ID="
-    << pEventRecord->EventHeader.EventDescriptor.Id
-    << L" PID=" << pEventRecord->EventHeader.ProcessId
-    << L" ProviderID=" << pEventRecord->EventHeader.ProcessId
-    << L" Opcode=" << pEventRecord->EventHeader.EventDescriptor.Opcode
-    << std::endl;
-  
-  if (pEventRecord->EventHeader.ProviderId == DiskIoGuid) {
-    std::wcout << L"Disk I/O Event: ID="
-      << pEventRecord->EventHeader.EventDescriptor.Id
-      << L" PID=" << pEventRecord->EventHeader.ProcessId
-      << std::endl;
-  }
-  if (pEventRecord->EventHeader.ProviderId != KERNEL_FILE_GUID)
-    return;
-
-  std::wcout << L"Kernel Event: ID="
-    << pEventRecord->EventHeader.EventDescriptor.Id
-    << L" PID=" << pEventRecord->EventHeader.ProcessId
-    << std::endl;
+VOID WINAPI ProcessMonitor::EventRecordCallback(PEVENT_RECORD pEventRecord) {
+  bool isIo = false, isNet = false;
+  if (pEventRecord->EventHeader.ProviderId == GUID_DISK_IO) isIo = true;
+  if (pEventRecord->EventHeader.ProviderId == GUID_TCPIP) isNet = true;
+  if (!isIo && !isNet) return;
+  if (pEventRecord->EventHeader.EventDescriptor.Opcode != 10 && pEventRecord->EventHeader.EventDescriptor.Opcode != 11) return;
 
   DWORD pid = pEventRecord->EventHeader.ProcessId;
-  ULONG ioSize = 0;
+  ULONG dataSize = 0;
 
   PROPERTY_DATA_DESCRIPTOR desc;
   ZeroMemory(&desc, sizeof(desc));
   desc.PropertyName = (ULONGLONG)L"Size";
   desc.ArrayIndex = ULONG_MAX;
 
-  TDHSTATUS status = TdhGetProperty(pEventRecord, 0, nullptr, 1, &desc, sizeof(ioSize), (PBYTE)&ioSize);
-
-  if (status != ERROR_SUCCESS) {
-    return;
+  TDHSTATUS status = TdhGetProperty(pEventRecord, 0, nullptr, 1, &desc, sizeof(dataSize), (PBYTE)&dataSize);
+  if (status == ERROR_SUCCESS) {
+    auto* self = (ProcessMonitor*)(pEventRecord->UserContext);
+    if (isIo) self->addIoCount(dataSize, pid);
+    if (isNet) self->addNetCount(dataSize, pid);
+    std::cout << "Trace data: " << dataSize << "\n";
   }
-
-  if (pEventRecord->EventHeader.EventDescriptor.Opcode == 10) {
-    std::cout << "Read: " << ioSize << "\n";
-  }
-  else if (pEventRecord->EventHeader.EventDescriptor.Opcode == 11) {
-    std::cout << "Write: " << ioSize << "\n";
-  }
-}
-
-static void startETW() {
-  TRACEHANDLE hSession = 0;
-
-  ULONG bufferSize = sizeof(EVENT_TRACE_PROPERTIES) + 1024;
-  EVENT_TRACE_PROPERTIES* pSessionProperties = (EVENT_TRACE_PROPERTIES*)malloc(bufferSize);
-  ZeroMemory(pSessionProperties, bufferSize);
-  pSessionProperties->Wnode.BufferSize = bufferSize;
-  pSessionProperties->Wnode.ClientContext = 1;
-  pSessionProperties->Wnode.Flags = WNODE_FLAG_TRACED_GUID;
-  wcscpy_s((wchar_t*)(pSessionProperties + 1), 1024, KERNEL_LOGGER_NAME);
-  pSessionProperties->LogFileMode = EVENT_TRACE_REAL_TIME_MODE;
-
-  ControlTrace(0, KERNEL_LOGGER_NAME, pSessionProperties, EVENT_TRACE_CONTROL_STOP);
-  ULONG status = StartTrace(&hSession, KERNEL_LOGGER_NAME, pSessionProperties);
-  if (status != ERROR_SUCCESS) {
-    std::cout << "StartTrace failed: " << status << "\n";
-    return;
-  }
-
-  EVENT_TRACE_LOGFILE logFile = {};
-  logFile.LoggerName = (LPWSTR)KERNEL_LOGGER_NAME;
-  logFile.ProcessTraceMode = PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD;
-  logFile.EventRecordCallback = EventRecordCallback;
-
-  TRACEHANDLE hTrace = OpenTrace(&logFile);
-  if (hTrace == INVALID_PROCESSTRACE_HANDLE) {
-    std::cout << "OpenTrace failed\n";
-    return;
-  }
-
-  std::cout << "Start tracing disk io\n";
-  ProcessTrace(&hTrace, 1, nullptr, nullptr);
 }
 
 //..................main....................................................................................................
 
 void ProcessMonitor::scan() {
   for (auto &[name, info]: processes) info.pids.clear();
+  procInfo.clear();
   HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
   if (snapshot == INVALID_HANDLE_VALUE) return;
   PROCESSENTRY32 entry{ sizeof(entry) };
   if (Process32First(snapshot, &entry)) {
     do {
       std::wstring pname = entry.szExeFile;
-      if (processes.find(pname) != processes.end()) processes[pname].pids.push_back(entry.th32ProcessID);
+      if (processes.find(pname) != processes.end()) {
+        processes[pname].pids.push_back(entry.th32ProcessID);
+        procInfo[entry.th32ProcessID] = &processes[pname];
+      }
     } while (Process32Next(snapshot, &entry));
   }
   CloseHandle(snapshot);
@@ -178,21 +127,55 @@ void ProcessMonitor::sample() {
   lastSysTime = sysKernelNowU + sysUserNowU;
 
   for (auto &[name, info]: processes) {
-    double cpu = 0, memory = 0, disk = 0;
-    getStats(info, sysDelta, cpu, memory, disk);
+    double cpu = 0, memory = 0, disk = 0, network = 0;
+    getStats(info, sysDelta, cpu, memory, disk, network);
     if (cpu > info.limit.cpu || memory > info.limit.memory || disk > info.limit.disk) {
-      std::cout << wstringToString(name) << " " << info.pids.size() << " " << cpu << " " << memory << " " << disk << "\n";
+      std::cout << wstringToString(name) << " " << info.pids.size() << " " << cpu << " " << memory << " " << disk << " " << network << "\n";
     }
     if (cpu > info.limit.cpu) addEvent(OveruseEvent(info.pids[0], wstringToString(name), "cpu", cpu, get_timestamp()));
     if (memory > info.limit.memory) addEvent(OveruseEvent(info.pids[0], wstringToString(name), "memory", memory, get_timestamp()));
     if (disk > info.limit.disk) addEvent(OveruseEvent(info.pids[0], wstringToString(name), "disk", disk, get_timestamp()));
+    if (network > info.limit.network) addEvent(OveruseEvent(info.pids[0], wstringToString(name), "network", network, get_timestamp()));
   }
 }
 
 void ProcessMonitor::run() {
-  startETW();
-  return;
+  //...............................ETW............................
+  TRACEHANDLE hSession = 0;
 
+  ULONG bufferSize = sizeof(EVENT_TRACE_PROPERTIES) + 1024;
+  EVENT_TRACE_PROPERTIES* pSessionProperties = (EVENT_TRACE_PROPERTIES*)malloc(bufferSize);
+  ZeroMemory(pSessionProperties, bufferSize);
+  pSessionProperties->Wnode.BufferSize = bufferSize;
+  pSessionProperties->Wnode.ClientContext = 1;
+  pSessionProperties->Wnode.Flags = WNODE_FLAG_TRACED_GUID;
+  wcscpy_s((wchar_t*)(pSessionProperties + 1), 1024, KERNEL_LOGGER_NAME);
+  pSessionProperties->LogFileMode = EVENT_TRACE_REAL_TIME_MODE;
+
+  ULONG status = StartTrace(&hSession, KERNEL_LOGGER_NAME, pSessionProperties);
+  if (status != ERROR_SUCCESS) {
+    std::cout << "StartTrace failed: " << status << "\n";
+    return;
+  }
+
+  EVENT_TRACE_LOGFILE logFile = {};
+  logFile.LoggerName = (LPWSTR)KERNEL_LOGGER_NAME;
+  logFile.ProcessTraceMode = PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD;
+  logFile.EventRecordCallback = EventRecordCallback;
+  logFile.Context = this;
+
+  TRACEHANDLE hTrace = OpenTrace(&logFile);
+  if (hTrace == INVALID_PROCESSTRACE_HANDLE) {
+    std::cout << "OpenTrace failed\n";
+    return;
+  }
+
+  std::cout << "Start tracing...\n";
+  std::thread traceThread([&]() {
+    ProcessTrace(&hTrace, 1, nullptr, nullptr);
+  });
+
+  //...................................MMAP......................................
   HANDLE hMap = CreateFileMapping(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, sizeof(SharedRing), FILE_MAP_NAME.c_str());
   if (!hMap) {
     printf("Create file mapping failed\n");
@@ -226,9 +209,16 @@ void ProcessMonitor::run() {
     std::this_thread::sleep_for(std::chrono::seconds(monitorInterval));
   }
 
+  //.....................................................................
   CloseHandle(hEvent);
   UnmapViewOfFile(ring);
   CloseHandle(hMap);
+
+  //.....................................................................
+  CloseTrace(hTrace);
+  ControlTrace(hSession, KERNEL_LOGGER_NAME, pSessionProperties, EVENT_TRACE_CONTROL_STOP);
+  traceThread.join();
+  free(pSessionProperties);
 }
 
 void ProcessMonitor::addEvent(const OveruseEvent& event) {
