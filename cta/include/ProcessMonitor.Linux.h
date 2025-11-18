@@ -28,7 +28,6 @@ class ProcessMonitor : public IProcessMonitor {
     struct ProcessInfo {
       std::vector<pid_t> pids;
       unsigned long long lastProcTime = 0, lastCpuTime = 0, lastIO = 0;
-      double lastDiskTime = 0, lastNetTime = 0;
       uint64_t lastTotalBytes = 0;
       ProcessStat limit;
       ProcessInfo() {}
@@ -48,6 +47,7 @@ class ProcessMonitor : public IProcessMonitor {
     SharedRing *ring;
     std::queue<OveruseEvent> events;
     int mmapFd = -1;
+    std::chrono::steady_clock::time_point lastMonitorTime;
 
     bool initNetStat();
   public:

@@ -41,7 +41,7 @@ else()
     OUTPUT_STRIP_TRAILING_WHITESPACE
   )
   target_sources(cta PRIVATE src/ProcessMonitor.Linux.cpp)
-  target_link_libraries(cta PRIVATE bpf elf z)
+  target_link_libraries(cta PRIVATE bpf elf z pthread rt)
   add_dependencies(cta bpf_obj)
   target_include_directories(cta PRIVATE /usr/include)
 endif()

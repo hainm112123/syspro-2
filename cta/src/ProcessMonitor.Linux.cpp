@@ -5,12 +5,6 @@
 #include <thread>
 #include <chrono>
 
-static double getCurrentTime() {
-  struct timespec ts;
-  clock_gettime(CLOCK_MONOTONIC, &ts);
-  return ts.tv_sec + ts.tv_nsec / 1e9;
-}
-
 static inline bool readfile(const char *path, char *buf, size_t buf_size, ssize_t &len) {
   int fd = open(path, O_RDONLY | O_CLOEXEC);
   if (fd == -1) return false;
@@ -118,7 +112,7 @@ static size_t getMemory(ProcessMonitor::ProcessInfo &info) {
   return memory / 1024;
 }
 
-static double getDisk(ProcessMonitor::ProcessInfo &info) {
+static double getDisk(ProcessMonitor::ProcessInfo &info, double elapsed) {
   char buf[1024];
   unsigned long long ioCount = 0;
   for (const auto &pid: info.pids) {
@@ -152,10 +146,8 @@ static double getDisk(ProcessMonitor::ProcessInfo &info) {
     // std::cout << found << " " << read_bytes << " " << write_bytes << "\n";
     ioCount += read_bytes + write_bytes;
   }
-  double currentTime = getCurrentTime();
-  double diskUsage = (double)(ioCount - info.lastIO) / (1024.0 * 1024.0 * (currentTime - info.lastDiskTime));
+  double diskUsage = (elapsed > (double)(1e-9)) ? (double)(ioCount - info.lastIO) / (1024.0 * 1024.0 * elapsed) : 0;
   info.lastIO = ioCount;
-  info.lastDiskTime = currentTime;
   return diskUsage;
 }
 
@@ -182,26 +174,33 @@ bool ProcessMonitor::initNetStat() {
     return false;
   }
   struct bpf_program *prog;
+  struct bpf_link *link;
   bpf_object__for_each_program(prog, obj) {
     const char *sec = bpf_program__section_name(prog);
-    if (strncmp(sec, "kprobe/", 7) == 0) {
-      struct bpf_link *link = bpf_program__attach_kprobe(prog, false, sec + 7);
-      if (!link) {
-        std::perror("Failed to attach kprobe");
+    if (strncmp(sec, "kretprobe/", 7) == 0) {
+      link = bpf_program__attach(prog);
+      if (libbpf_get_error(link)) {
+        printf("Failed to attach %s\n", sec);
       }
+      continue;
     }
   }
 
-  int map_tcp_tx = bpf_object__find_map_fd_by_name(obj, "tcp_tx");
-  int map_tcp_rx = bpf_object__find_map_fd_by_name(obj, "tcp_rx");
-  int map_udp_tx = bpf_object__find_map_fd_by_name(obj, "udp_tx");
-  int map_udp_rx = bpf_object__find_map_fd_by_name(obj, "udp_rx");
-  netMaps.push_back(map_tcp_tx);
-  netMaps.push_back(map_tcp_rx);
-  netMaps.push_back(map_udp_tx);
-  netMaps.push_back(map_udp_rx);
+  // int map_tcp_tx = bpf_object__find_map_fd_by_name(obj, "tcp_tx");
+  // int map_tcp_rx = bpf_object__find_map_fd_by_name(obj, "tcp_rx");
+  // int map_udp_tx = bpf_object__find_map_fd_by_name(obj, "udp_tx");
+  // int map_udp_rx = bpf_object__find_map_fd_by_name(obj, "udp_rx");
+  // netMaps.push_back(map_tcp_tx);
+  // netMaps.push_back(map_tcp_rx);
+  // netMaps.push_back(map_udp_tx);
+  // netMaps.push_back(map_udp_rx);
+  int map_tx = bpf_object__find_map_fd_by_name(obj, "tx_bytes");
+  int map_rx = bpf_object__find_map_fd_by_name(obj, "rx_bytes");
+  netMaps.push_back(map_tx);
+  netMaps.push_back(map_rx);
 
-  if (map_tcp_tx < 0 || map_tcp_rx < 0 || map_udp_tx < 0 || map_udp_rx < 0) {
+  // if (map_tcp_tx < 0 || map_tcp_rx < 0 || map_udp_tx < 0 || map_udp_rx < 0) {
+  if (map_tx < 0 || map_rx < 0) {
     std::perror("Failed to find maps");
     bpf_object__close(obj);
     return false;
@@ -217,7 +216,7 @@ ProcessMonitor::ProcessMonitor(const std::vector<ProcessConfig> &configs, int _m
 }
 
 ProcessMonitor::~ProcessMonitor() {
-  // bpf_object__close(obj);
+  bpf_object__close(obj);
   clean();
 }
 
@@ -248,14 +247,16 @@ void ProcessMonitor::scan() {
 
     auto &process = processes[pname];
     process.pids.push_back(pid);
-    process.lastDiskTime = getCurrentTime();
-    process.lastNetTime = getCurrentTime();
   }
   closedir(dir);
 }
 
 void ProcessMonitor::sample() {
   unsigned long long cpuTime = getTotalCpuTime();
+  auto now = std::chrono::steady_clock::now();
+  auto elapsedTime = now - lastMonitorTime;
+  double elapsed = std::chrono::duration_cast<std::chrono::seconds>(elapsedTime).count();
+  lastMonitorTime = now;
 
   auto getNet = [&](ProcessInfo &info) {
     uint64_t totalBytes = 0, val = 0;
@@ -264,13 +265,12 @@ void ProcessMonitor::sample() {
       for (auto pid: info.pids) {
         if (bpf_map_lookup_elem(net_map, &pid, &val) == 0) {
           totalBytes += val;
+          // std::cout << val << "\n";
         }
       }
     }
 
-    double currentNetTime = getCurrentTime();
-    double net = (double)(totalBytes - info.lastTotalBytes) / (1024.0 * (currentNetTime - info.lastNetTime));
-    info.lastNetTime = currentNetTime;
+    double net = (elapsed > (double)(1e-9)) ? (double)(totalBytes - info.lastTotalBytes) / (1024.0 * elapsed) : 0;
     info.lastTotalBytes = totalBytes;
     return net;
   };
@@ -278,7 +278,7 @@ void ProcessMonitor::sample() {
   for (auto &[name, info]: processes) {
     double cpu = getCPU(info, cpuTime);
     double memory = getMemory(info);
-    double disk = getDisk(info);
+    double disk = getDisk(info, elapsed);
     double net = getNet(info);
     // std::cout << std::fixed << std::setprecision(2) << "Alert: " << name << " " << info.pids.size() << " use: " << cpu << " " << memory << " " << disk << " " << net << "\n";
     if (cpu > info.limit.cpu || memory > info.limit.memory || disk > info.limit.disk || net > info.limit.network) {
@@ -304,9 +304,9 @@ static void* sendEventEntry(void *arg) {
 }
 
 void ProcessMonitor::run() {
-  // if (!initNetStat()) {
-  //   return;
-  // }
+  if (!initNetStat()) {
+    return;
+  }
 
   eventFd = eventfd(0, EFD_SEMAPHORE);
   unixSocketFd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -323,6 +323,7 @@ void ProcessMonitor::run() {
 
   printf("Start monitoring....\n");
   printf("Press q to quit.\n");
+  lastMonitorTime = std::chrono::steady_clock::now();
   while (1) {
     fd_set fds;
     FD_ZERO(&fds);
@@ -404,7 +405,7 @@ void ProcessMonitor::addEvent(const OveruseEvent &event) {
     return;
   }
 
-  printf("Head: %d, Tail: %d\n", head, tail);
+  // printf("Head: %d, Tail: %d\n", head, tail);
   ring->buffer[tail] = event;
   __atomic_store_n(&ring->tail, next, __ATOMIC_RELEASE);
 

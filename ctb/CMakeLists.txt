@@ -11,6 +11,7 @@ if (WIN32)
 	target_link_libraries(ctb PRIVATE Ws2_32)
 else()
 	target_sources(ctb PRIVATE src/EventLogger.Linux.cpp)
+	target_link_libraries(ctb pthread rt)
 endif()
 target_sources(ctb PRIVATE src/utils.cpp src/ConfigModifier.cpp)
 
