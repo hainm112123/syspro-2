@@ -4,6 +4,7 @@
 #include <iomanip>
 #include <thread>
 #include <chrono>  
+#include <fltuser.h>
 
 ProcessMonitor::ProcessMonitor(const std::vector<ProcessConfig> &configs, int _monitorInterval): monitorInterval(_monitorInterval) {
   SetConfigs(configs);
@@ -141,7 +142,7 @@ void ProcessMonitor::sample() {
 
 void ProcessMonitor::run() {
   //...............................ETW............................
-  TRACEHANDLE hSession = 0;
+  /*TRACEHANDLE hSession = 0;
 
   ULONG bufferSize = sizeof(EVENT_TRACE_PROPERTIES) + 1024;
   EVENT_TRACE_PROPERTIES* pSessionProperties = (EVENT_TRACE_PROPERTIES*)malloc(bufferSize);
@@ -168,11 +169,25 @@ void ProcessMonitor::run() {
   if (hTrace == INVALID_PROCESSTRACE_HANDLE) {
     std::cout << "OpenTrace failed\n";
     return;
-  }
+  }*/
 
   std::cout << "Start tracing...\n";
+  volatile bool isTracing = true;
   std::thread traceThread([&]() {
-    ProcessTrace(&hTrace, 1, nullptr, nullptr);
+    //ProcessTrace(&hTrace, 1, nullptr, nullptr);
+    UNICODE_STRING PortName = RTL_CONSTANT_STRING(L"\\DiskIoFilterPort");
+    HANDLE hPort;
+    HANDLE hResult = FilterConnectCommunicationPort(&PortName, 0, NULL, 0, NULL, hPort);
+    if (IS_ERROR(hResult)) {
+      printf("Cannot connect to filter's port...");
+      return;
+    }
+    IO_MESSAGE msg;
+    ULONG bytesRead;
+    while (isTracing) {
+      FilterGetMessage(hPort, &msg, sizeof(IO_MESSAGE), &bytesRead);
+      addIoCount(msg.bytes, msg.ProcessId);
+    }
   });
 
   //...................................MMAP......................................
@@ -215,8 +230,9 @@ void ProcessMonitor::run() {
   CloseHandle(hMap);
 
   //.....................................................................
-  CloseTrace(hTrace);
-  ControlTrace(hSession, KERNEL_LOGGER_NAME, pSessionProperties, EVENT_TRACE_CONTROL_STOP);
+  //CloseTrace(hTrace);
+  //ControlTrace(hSession, KERNEL_LOGGER_NAME, pSessionProperties, EVENT_TRACE_CONTROL_STOP);
+  isTracing = false;
   traceThread.join();
   free(pSessionProperties);
 }

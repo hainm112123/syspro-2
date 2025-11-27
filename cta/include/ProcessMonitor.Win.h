@@ -48,6 +48,10 @@ public:
     ProcessInfo() {}
     ProcessInfo(ProcessStat _limit) : limit(_limit) {}
   };
+  typedef struct _IO_MESSAGE {
+    HANDLE ProcessId;
+    ULONG64 bytes;
+  } IO_MESSAGE, * PIO_MESSAGE;
 private:
   const std::wstring FILE_MAP_NAME = _TEXT("SharedOveruseEventRing");
   const std::wstring WIN_EVENT_NAME = _TEXT("SharedRingEvent");

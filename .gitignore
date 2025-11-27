@@ -49,3 +49,4 @@ stress_test
 stress_test.tmp
 .vs
 *.etl
+x64
