@@ -4,7 +4,6 @@
 #include <iomanip>
 #include <thread>
 #include <chrono>  
-#include <fltuser.h>
 
 ProcessMonitor::ProcessMonitor(const std::vector<ProcessConfig> &configs, int _monitorInterval): monitorInterval(_monitorInterval) {
   SetConfigs(configs);
@@ -175,17 +174,16 @@ void ProcessMonitor::run() {
   volatile bool isTracing = true;
   std::thread traceThread([&]() {
     //ProcessTrace(&hTrace, 1, nullptr, nullptr);
-    UNICODE_STRING PortName = RTL_CONSTANT_STRING(L"\\DiskIoFilterPort");
+    std::wstring PortName = L"\\DiskIoFilterPort";
     HANDLE hPort;
-    HANDLE hResult = FilterConnectCommunicationPort(&PortName, 0, NULL, 0, NULL, hPort);
+    HRESULT hResult = FilterConnectCommunicationPort(PortName.c_str(), 0, NULL, 0, NULL, &hPort);
     if (IS_ERROR(hResult)) {
       printf("Cannot connect to filter's port...");
       return;
     }
     IO_MESSAGE msg;
-    ULONG bytesRead;
     while (isTracing) {
-      FilterGetMessage(hPort, &msg, sizeof(IO_MESSAGE), &bytesRead);
+      FilterGetMessage(hPort, &msg.MessageHeader, sizeof(IO_MESSAGE), NULL);
       addIoCount(msg.bytes, msg.ProcessId);
     }
   });
@@ -234,7 +232,7 @@ void ProcessMonitor::run() {
   //ControlTrace(hSession, KERNEL_LOGGER_NAME, pSessionProperties, EVENT_TRACE_CONTROL_STOP);
   isTracing = false;
   traceThread.join();
-  free(pSessionProperties);
+  //free(pSessionProperties);
 }
 
 void ProcessMonitor::addEvent(const OveruseEvent& event) {

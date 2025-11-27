@@ -27,6 +27,7 @@
 #include <tchar.h>
 #include <tdh.h>
 #include <evntcons.h>
+#include <fltuser.h>
 #pragma comment(lib, "tdh.lib")
 #pragma comment(lib, "advapi32.lib")
 
@@ -49,7 +50,8 @@ public:
     ProcessInfo(ProcessStat _limit) : limit(_limit) {}
   };
   typedef struct _IO_MESSAGE {
-    HANDLE ProcessId;
+    FILTER_MESSAGE_HEADER MessageHeader;
+    ULONG_PTR ProcessId;
     ULONG64 bytes;
   } IO_MESSAGE, * PIO_MESSAGE;
 private:

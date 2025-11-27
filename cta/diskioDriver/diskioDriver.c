@@ -1,7 +1,8 @@
 #include <fltkernel.h>
 
 typedef struct _IO_MESSAGE {
-	HANDLE ProcessId;
+	FILTER_MESSAGE_HEADER MessageHeader;
+	ULONG_PTR ProcessId;
 	ULONG64 bytes;
 } IO_MESSAGE, *PIO_MESSAGE;
 
@@ -102,7 +103,9 @@ FLT_POSTOP_CALLBACK_STATUS PostIoCallback(PFLT_CALLBACK_DATA Data, PCFLT_RELATED
 	HANDLE pid = PsGetCurrentProcessId();
 	ULONG64 bytes = Data->IoStatus.Information;
 	if (ClientPort != NULL) {
-		IO_MESSAGE msg = { pid, bytes };
+		IO_MESSAGE msg;
+		msg.ProcessId = (ULONG_PTR)pid;
+		msg.bytes = bytes;
 		NTSTATUS status;
 		ULONG replyLength;
 		status = FltSendMessage(FilterHandle, &ClientPort, &msg, sizeof(IO_MESSAGE), NULL, &replyLength, 0);
