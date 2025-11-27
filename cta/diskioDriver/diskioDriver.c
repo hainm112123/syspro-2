@@ -1,5 +1,13 @@
 #include <fltkernel.h>
 
+#define PTDBG_TRACE_ROUTINES            0x00000001
+#define PTDBG_TRACE_OPERATION_STATUS    0x00000002
+
+ULONG gTraceFlags = PTDBG_TRACE_ROUTINES | PTDBG_TRACE_OPERATION_STATUS;
+
+
+#define PT_DBG_PRINT( _dbgLevel, _string ) (FlagOn(gTraceFlags,(_dbgLevel)) ? DbgPrint _string : ((int)0))
+
 typedef struct _IO_MESSAGE {
 	FILTER_MESSAGE_HEADER MessageHeader;
 	ULONG_PTR ProcessId;
@@ -31,7 +39,7 @@ const FLT_OPERATION_REGISTRATION Callbacks[] = {
 const FLT_REGISTRATION FilterRegistration = {
 	sizeof(FLT_REGISTRATION),
 	FLT_REGISTRATION_VERSION,
-	0, NULL,
+	FLTFL_REGISTRATION_SUPPORT_NPFS_MSFS, NULL,
 	Callbacks, DiskIoUnload,
 	NULL,
 	DiskIoQueryTeardown,
@@ -49,6 +57,7 @@ NTSTATUS DiskIoConnect(PFLT_PORT _ClientPort, PVOID ServerPortCookie, PVOID Conn
 
 VOID DiskIoDisconnect(PVOID ConnectionCookie) {
 	UNREFERENCED_PARAMETER(ConnectionCookie);
+	PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Communication port connected\n"));
 	ClientPort = NULL;
 }
 
@@ -70,14 +79,24 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 	InitializeObjectAttributes(&oa, &PortName, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, NULL);
 
 	status = FltRegisterFilter(DriverObject, &FilterRegistration, &FilterHandle);
-	if (!NT_SUCCESS(status)) return status;
+	if (!NT_SUCCESS(status)) {
+		PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Registration failed\n"));
+		return status;
+	}
 
 	status = FltCreateCommunicationPort(FilterHandle, &ServerPort, &oa, NULL, DiskIoConnect, DiskIoDisconnect, DiskIoMessage, 1);
 	if (NT_SUCCESS(status)) {
 		status = FltStartFiltering(FilterHandle);
 		if (!NT_SUCCESS(status)) {
+			PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Failed to start filtering\n"));
 			FltUnregisterFilter(FilterHandle);
 		}
+		else {
+			PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Start filtering\n"));
+		}
+	}
+	else {
+		PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Failed to create Communication port\n"));
 	}
 	return status;
 }
@@ -85,6 +104,11 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 NTSTATUS DiskIoUnload(_In_ FLT_FILTER_UNLOAD_FLAGS Flags) {
 	UNREFERENCED_PARAMETER(Flags);
 	PAGED_CODE();
+	if (ClientPort != NULL) {
+		FltCloseClientPort(FilterHandle, &ClientPort);
+		ClientPort = NULL;
+	}
+	FltCloseCommunicationPort(ServerPort);
 	FltUnregisterFilter(FilterHandle);
 	return STATUS_SUCCESS;
 }
@@ -109,6 +133,7 @@ FLT_POSTOP_CALLBACK_STATUS PostIoCallback(PFLT_CALLBACK_DATA Data, PCFLT_RELATED
 		NTSTATUS status;
 		ULONG replyLength;
 		status = FltSendMessage(FilterHandle, &ClientPort, &msg, sizeof(IO_MESSAGE), NULL, &replyLength, 0);
+		PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Message sent\n"));
 	}
 	return FLT_POSTOP_FINISHED_PROCESSING;
 }
