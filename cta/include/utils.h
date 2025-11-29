@@ -19,6 +19,7 @@ const int RING_SIZE = 1024;
 const int EVENT_NAME_SIZE = 32;
 const int EVENT_TYPE_SIZE = 16;
 const int EVENT_TIME_SIZE = 32;
+const int MAX_WINS_PROC_PATH = 260;
 
 struct ProcessConfig {
   std::string name;

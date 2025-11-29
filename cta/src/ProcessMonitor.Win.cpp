@@ -5,6 +5,20 @@
 #include <thread>
 #include <chrono>  
 
+static std::wstring GetProcessNameByPid(DWORD pid) {
+  std::wstring name = L"<unkown>";
+  HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, pid);
+  if (hProcess) {
+    WCHAR buffer[MAX_WINS_PROC_PATH];
+    DWORD size = MAX_WINS_PROC_PATH;
+    if (QueryFullProcessImageName(hProcess, 0, buffer, &size)) {
+      name = buffer;
+    }
+    CloseHandle(hProcess);
+  }
+  return name;
+}
+
 ProcessMonitor::ProcessMonitor(const std::vector<ProcessConfig> &configs, int _monitorInterval): monitorInterval(_monitorInterval) {
   SetConfigs(configs);
 }
@@ -174,17 +188,19 @@ void ProcessMonitor::run() {
   volatile bool isTracing = true;
   std::thread traceThread([&]() {
     //ProcessTrace(&hTrace, 1, nullptr, nullptr);
-    std::wstring PortName = L"\\DiskIoFilterPort";
     HANDLE hPort;
-    HRESULT hResult = FilterConnectCommunicationPort(PortName.c_str(), 0, NULL, 0, NULL, &hPort);
+    HRESULT hResult = FilterConnectCommunicationPort(L"\\DiskIoFilterPort", 0, NULL, 0, NULL, &hPort);
     if (IS_ERROR(hResult)) {
       printf("Cannot connect to filter's port...");
       return;
     }
     IO_MESSAGE msg;
     while (isTracing) {
-      FilterGetMessage(hPort, &msg.MessageHeader, sizeof(IO_MESSAGE), NULL);
-      addIoCount(msg.bytes, msg.ProcessId);
+      // FilterGetMessage(hPort, &msg.MessageHeader, sizeof(IO_MESSAGE), NULL);
+      // addIoCount(msg.bytes, msg.ProcessId);
+      FilterGetMessage(hPort, &msg.MessageHeader, sizeof(PROCESS_MESSAGE), NULL);
+      DWORD pid = (DWORD)(msg.ProcessId);
+      std::cout << pid << " " << wstringToString(GetProcessNameByPid(pid)) << "\n";
     }
   });
 

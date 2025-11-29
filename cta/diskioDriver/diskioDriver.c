@@ -1,10 +1,10 @@
 #include <fltkernel.h>
+#include <ntifs.h>
 
 #define PTDBG_TRACE_ROUTINES            0x00000001
 #define PTDBG_TRACE_OPERATION_STATUS    0x00000002
 
 ULONG gTraceFlags = PTDBG_TRACE_ROUTINES | PTDBG_TRACE_OPERATION_STATUS;
-
 
 #define PT_DBG_PRINT( _dbgLevel, _string ) (FlagOn(gTraceFlags,(_dbgLevel)) ? DbgPrint _string : ((int)0))
 
@@ -13,6 +13,14 @@ typedef struct _IO_MESSAGE {
 	ULONG_PTR ProcessId;
 	ULONG64 bytes;
 } IO_MESSAGE, *PIO_MESSAGE;
+
+#pragma pack(push, 1)
+typedef struct _PROCESS_MESSAGE {
+	FILTER_MESSAGE_HEADER MessageHeader;
+	ULONG ProcessId;
+	BOOLEAN IsCreate;
+} PROCESS_MESSAGE, *PPROCESS_MESSAGE;
+#pragma pack(pop)
 
 DRIVER_INITIALIZE DriverEntry;
 NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING RegistryPath);
@@ -71,13 +79,57 @@ NTSTATUS DiskIoMessage(PVOID ConnectionCookie, PVOID InputBuffer, ULONG InputBuf
 	return STATUS_SUCCESS;
 }
 
+VOID ProcessCreateCallbackEx(PEPROCESS Process, HANDLE ProcessId, PPS_CREATE_NOTIFY_INFO CreateInfo) {
+	UNREFERENCED_PARAMETER(Process);
+	if (ClientPort != NULL) {
+		PROCESS_MESSAGE msg;
+		msg.ProcessId = HandleToUlong(ProcessId);
+		if (CreateInfo == NULL) {
+			msg.IsCreate = FALSE;
+		} else {
+			msg.IsCreate = TRUE;
+		}
+		NTSTATUS status;
+		ULONG replyLength;
+		status = FltSendMessage(FilterHandle, &ClientPort, &msg, sizeof(PROCESS_MESSAGE), NULL, &replyLength, 0);
+		PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Process Message sent\n"));
+	}
+}
+
+VOID ProcessCreateCallback(HANDLE ParentId, HANDLE ProcessId, BOOLEAN Create) {
+	UNREFERENCED_PARAMETER(ParentId);
+	if (ClientPort != NULL) {
+		PROCESS_MESSAGE msg;
+		msg.ProcessId = HandleToULong(ProcessId);
+		msg.IsCreate = Create;
+		NTSTATUS status;
+		ULONG replyLength;
+		status = FltSendMessage(FilterHandle, &ClientPort, &msg, sizeof(PROCESS_MESSAGE), NULL, &replyLength, 0);
+		PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Process Message sent\n"));
+	}
+}
+
 NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING RegistryPath) {
 	UNREFERENCED_PARAMETER(RegistryPath);
 	NTSTATUS status;
 	OBJECT_ATTRIBUTES oa;
 	UNICODE_STRING PortName = RTL_CONSTANT_STRING(L"\\DiskIoFilterPort");
-	InitializeObjectAttributes(&oa, &PortName, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, NULL);
+	PSECURITY_DESCRIPTOR sd;
 
+	status  = FltBuildDefaultSecurityDescriptor(&sd, FLT_PORT_ALL_ACCESS);
+	if (!NT_SUCCESS(status)) {
+		PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Build sd failed\n"));
+		return status;
+	}
+
+	// status = PsSetCreateProcessNotifyRoutineEx(ProcessCreateCallback, FALSE);
+	status = PsSetCreateProcessNotifyRoutine(ProcessCreateCallback, FALSE);
+	if (!NT_SUCCESS(status)) {
+		PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Register process callback failed\n"));
+		return status;
+	}
+
+	InitializeObjectAttributes(&oa, &PortName, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, sd);
 	status = FltRegisterFilter(DriverObject, &FilterRegistration, &FilterHandle);
 	if (!NT_SUCCESS(status)) {
 		PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Registration failed\n"));
@@ -124,16 +176,18 @@ FLT_POSTOP_CALLBACK_STATUS PostIoCallback(PFLT_CALLBACK_DATA Data, PCFLT_RELATED
 	UNREFERENCED_PARAMETER(FltObjects);
 	UNREFERENCED_PARAMETER(CompletionContext);
 	UNREFERENCED_PARAMETER(Flags);
-	HANDLE pid = PsGetCurrentProcessId();
-	ULONG64 bytes = Data->IoStatus.Information;
-	if (ClientPort != NULL) {
-		IO_MESSAGE msg;
-		msg.ProcessId = (ULONG_PTR)pid;
-		msg.bytes = bytes;
-		NTSTATUS status;
-		ULONG replyLength;
-		status = FltSendMessage(FilterHandle, &ClientPort, &msg, sizeof(IO_MESSAGE), NULL, &replyLength, 0);
-		PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Message sent\n"));
-	}
+	UNREFERENCED_PARAMETER(Data);
+	// HANDLE pid = PsGetCurrentProcessId();
+	// ULONG64 bytes = Data->IoStatus.Information;
+	// PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskioDriver: PostIo called"));
+	// if (ClientPort != NULL) {
+	// 	IO_MESSAGE msg;
+	// 	msg.ProcessId = (ULONG_PTR)pid;
+	// 	msg.bytes = bytes;
+	// 	NTSTATUS status;
+	// 	ULONG replyLength;
+	// 	status = FltSendMessage(FilterHandle, &ClientPort, &msg, sizeof(IO_MESSAGE), NULL, &replyLength, 0);
+	// 	PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Message sent\n"));
+	// }
 	return FLT_POSTOP_FINISHED_PROCESSING;
 }
