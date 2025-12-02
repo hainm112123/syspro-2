@@ -8,16 +8,45 @@ ULONG gTraceFlags = PTDBG_TRACE_ROUTINES | PTDBG_TRACE_OPERATION_STATUS;
 
 #define PT_DBG_PRINT( _dbgLevel, _string ) (FlagOn(gTraceFlags,(_dbgLevel)) ? DbgPrint _string : ((int)0))
 
-typedef struct _IO_MESSAGE {
-	FILTER_MESSAGE_HEADER MessageHeader;
-	ULONG_PTR ProcessId;
-	ULONG64 bytes;
-} IO_MESSAGE, *PIO_MESSAGE;
-
 typedef struct _PROCESS_MESSAGE {
 	ULONG ProcessId;
 	BOOLEAN IsCreate;
 } PROCESS_MESSAGE, *PPROCESS_MESSAGE;
+
+typedef struct _PROCESS_REPLY {
+  BOOLEAN IsTracked;
+} PROCESS_REPLY, *PPROCESS_REPLY;
+
+typedef struct _PROCESS_STAT {
+  ULONG ProcessId;
+  ULONG64 IoBytes;
+  LIST_ENTRY ListEntry;
+} PROCESS_STAT, *PPROCESS_STAT;
+
+const enum TRACK_REQUEST_TYPE {
+  TYPE_TRACK_PROCESS = 0,
+  TYPE_UNTRACK_PROCESS,
+  TYPE_REQUEST_STAT
+};
+
+typedef struct _TRACK_REQUEST {
+  enum TRACK_REQUEST_TYPE type;
+  ULONG ProcessId;
+} TRACK_REQUEST, *PTRACK_REQUEST;
+
+typedef struct _PROCESS_USAGE_ENTRY {
+  ULONG ProcessId;
+  ULONG IoBytes;
+} PROCESS_USAGE_ENTRY, *PPROCESS_USAGE_ENTRY;
+
+typedef struct _PROCESS_USAGE_LIST {
+  ULONG Count;
+  PROCESS_USAGE_ENTRY Entries[1];
+} PROCESS_USAGE_LIST, *PPROCESS_USAGE_LIST;
+
+LIST_ENTRY g_TrackedList;
+KSPIN_LOCK g_TrackedLock;
+ULONG g_TrackedCount;
 
 DRIVER_INITIALIZE DriverEntry;
 NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING RegistryPath);
@@ -25,7 +54,7 @@ NTSTATUS DiskIoUnload(_In_ FLT_FILTER_UNLOAD_FLAGS Flags);
 NTSTATUS DiskIoQueryTeardown(_In_ PCFLT_RELATED_OBJECTS FltObjects, _In_ FLT_INSTANCE_QUERY_TEARDOWN_FLAGS Flags);
 
 PFLT_FILTER FilterHandle;
-PFLT_PORT ServerPort = NULL, ClientPort = NULL;
+PFLT_PORT ServerPort = NULL, ClientPort = NULL, UsageServerPort, UsageClientPort;
 
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(INIT, DriverEntry)
@@ -51,31 +80,6 @@ const FLT_REGISTRATION FilterRegistration = {
 	NULL, NULL, NULL, NULL, NULL
 };
 
-NTSTATUS DiskIoConnect(PFLT_PORT _ClientPort, PVOID ServerPortCookie, PVOID ConnectionContext, ULONG SizeOfContext, PVOID* ConnectionCookie) {
-	UNREFERENCED_PARAMETER(ServerPortCookie);
-	UNREFERENCED_PARAMETER(ConnectionContext);
-	UNREFERENCED_PARAMETER(SizeOfContext);
-	UNREFERENCED_PARAMETER(ConnectionCookie);
-	ClientPort = _ClientPort;
-	return STATUS_SUCCESS;
-}
-
-VOID DiskIoDisconnect(PVOID ConnectionCookie) {
-	UNREFERENCED_PARAMETER(ConnectionCookie);
-	PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Communication port connected\n"));
-	ClientPort = NULL;
-}
-
-NTSTATUS DiskIoMessage(PVOID ConnectionCookie, PVOID InputBuffer, ULONG InputBufferSize, PVOID OutputBuffer, ULONG OutputBufferSize, PULONG ReturnOutputBufferLength) {
-	UNREFERENCED_PARAMETER(ConnectionCookie);
-	UNREFERENCED_PARAMETER(InputBuffer);
-	UNREFERENCED_PARAMETER(InputBufferSize);
-	UNREFERENCED_PARAMETER(OutputBuffer);
-	UNREFERENCED_PARAMETER(OutputBufferSize);
-	UNREFERENCED_PARAMETER(ReturnOutputBufferLength);
-	return STATUS_SUCCESS;
-}
-
 VOID ProcessCreateCallbackEx(PEPROCESS Process, HANDLE ProcessId, PPS_CREATE_NOTIFY_INFO CreateInfo) {
 	UNREFERENCED_PARAMETER(Process);
 	PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Process %ul dectected\n", HandleToUlong(ProcessId)));
@@ -94,29 +98,178 @@ VOID ProcessCreateCallbackEx(PEPROCESS Process, HANDLE ProcessId, PPS_CREATE_NOT
 	}
 }
 
+VOID TrackProcess(ULONG pid) {
+  KIRQL oldIrql;
+  KeAcquireQueuedSpinLock(&g_TrackedLock, &oldIrql);
+
+  PPROCESS_STAT entry = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(PROCESS_STAT), 'uLsP');
+  entry->ProcessId = pid;
+  entry->IoBytes = 0;
+  InsertTailList(&g_TrackedList, &entry->ListEntry);
+  g_TrackedCount ++;
+  KeReleaseSpinLock(&g_TrackedLock, oldIrql);
+}
+
+VOID UntrackedProcess(ULONG pid) {
+  KIRQL oldIrql;
+  KeAcquireQueuedSpinLock(&g_TrackedLock, &oldIrql);
+
+  for (PLIST_ENTRY entry = g_TrackedList.Flink; entry != &g_TrackedList; entry = entry->Flink) {
+    PPROCESS_STAT p = CONTAINING_RECORD(entry, PROCESS_STAT, ListEntry);
+    if (p->ProcessId == pid) {
+      RemoveEntryList(entry);
+      ExFreePoolWithTag(p, "pTsI");
+      g_TrackedCount --;
+      break;
+    }
+  }
+
+  KeReleaseSpinLock(&g_TrackedLock, oldIrql);
+}
+
+VOID UpdateStat(ULONG pid, ULONG64 bytes) {
+  KIRQL oldIrql;
+  KeAcquireQueuedSpinLock(&g_TrackedLock, &oldIrql);
+
+  for (PLIST_ENTRY entry = g_TrackedList.Flink; entry != &g_TrackedList; entry = entry->Flink) {
+    PPROCESS_STAT p = CONTAINING_RECORD(entry, PROCESS_STAT, ListEntry);
+    if (p->ProcessId == pid) {
+      p->IoBytes += bytes;
+      break;
+    }
+  }
+
+  KeReleaseSpinLock(&g_TrackedLock, oldIrql);
+}
+
+VOID SendUsage() {
+  ULONG bufSize = sizeof(PROCESS_USAGE_LIST) + (g_TrackedCount - 1) * sizeof(PROCESS_USAGE_ENTRY);
+  PPROCESS_USAGE_LIST usage = ExAllocatePoolZero(NonPagedPoolNx, bufSize, 'uLsP');
+  if (!usage) return STATUS_INSUFFICIENT_RESOURCES;
+  usage->Count = g_TrackedCount;
+  ULONG i = 0;
+
+  KIRQL oldIrql;
+  KeAcquireQueuedSpinLock(&g_TrackedLock, &oldIrql);
+  for (PLIST_ENTRY entry = g_TrackedList.Flink; entry != &g_TrackedList; entry = entry->Flink) {
+    PPROCESS_STAT p = CONTAINING_RECORD(entry, PROCESS_STAT, ListEntry);
+    usage->Entries[i].ProcessId = p->ProcessId;
+    usage->Entries[i].IoBytes = p->IoBytes;
+    p->IoBytes = 0;
+    i ++;
+  }
+  KeReleaseSpinLock(&g_TrackedLock, oldIrql);
+
+  ULONG replyLength = 0;
+  LARGE_INTEGER timeout;
+  timeout.QuadPart = -(500LL * 10000);
+  NTSTATUS status = FltSendMessage(FilterHandle, &UsageClientPort, usage, bufSize, NULL, replyLength, &timeout);
+  if (NT_SUCCESS(status)) {
+    PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Send usage succeeded\n"));
+  } else {
+    PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Send usage failed\n"));
+  }
+}
+
+NTSTATUS ProcessPortConnect(PFLT_PORT _ClientPort, PVOID ServerPortCookie, PVOID ConnectionContext, ULONG SizeOfContext, PVOID* ConnectionCookie) {
+	UNREFERENCED_PARAMETER(ServerPortCookie);
+	UNREFERENCED_PARAMETER(ConnectionContext);
+	UNREFERENCED_PARAMETER(SizeOfContext);
+	UNREFERENCED_PARAMETER(ConnectionCookie);
+	ClientPort = _ClientPort;
+  PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Communication port connected\n"));
+	return STATUS_SUCCESS;
+}
+
+VOID ProcessPortDisconnect(PVOID ConnectionCookie) {
+	UNREFERENCED_PARAMETER(ConnectionCookie);
+	PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Communication port disconnected\n"));
+	ClientPort = NULL;
+}
+
+NTSTATUS ProcessPortMessage(PVOID ConnectionCookie, PVOID InputBuffer, ULONG InputBufferSize, PVOID OutputBuffer, ULONG OutputBufferSize, PULONG ReturnOutputBufferLength) {
+	UNREFERENCED_PARAMETER(ConnectionCookie);
+	UNREFERENCED_PARAMETER(InputBuffer);
+	UNREFERENCED_PARAMETER(InputBufferSize);
+	UNREFERENCED_PARAMETER(OutputBuffer);
+	UNREFERENCED_PARAMETER(OutputBufferSize);
+	UNREFERENCED_PARAMETER(ReturnOutputBufferLength);
+	return STATUS_SUCCESS;
+}
+
+NTSTATUS UsagePortConnect(PFLT_PORT _ClientPort, PVOID ServerPortCookie, PVOID ConnectionContext, ULONG SizeOfContext, PVOID* ConnectionCookie) {
+	UNREFERENCED_PARAMETER(ServerPortCookie);
+	UNREFERENCED_PARAMETER(ConnectionContext);
+	UNREFERENCED_PARAMETER(SizeOfContext);
+	UNREFERENCED_PARAMETER(ConnectionCookie);
+	UsageClientPort = _ClientPort;
+  PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Usage Communication port connected\n"));
+	return STATUS_SUCCESS;
+}
+
+VOID UsagePortDisconnect(PVOID ConnectionCookie) {
+	UNREFERENCED_PARAMETER(ConnectionCookie);
+	PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Usage Communication port disconnected\n"));
+	UsageClientPort = NULL;
+}
+
+NTSTATUS UsagePortMessage(PVOID ConnectionCookie, PVOID InputBuffer, ULONG InputBufferSize, PVOID OutputBuffer, ULONG OutputBufferSize, PULONG ReturnOutputBufferLength) {
+	UNREFERENCED_PARAMETER(ConnectionCookie);
+	UNREFERENCED_PARAMETER(OutputBuffer);
+	UNREFERENCED_PARAMETER(OutputBufferSize);
+	UNREFERENCED_PARAMETER(ReturnOutputBufferLength);
+
+  if (InputBuffer == NULL || InputBufferSize < sizeof(TRACK_REQUEST)) return STATUS_INVALID_PARAMETER;
+  PTRACK_REQUEST request = (PTRACK_REQUEST)(InputBuffer);
+  if (request->type == TYPE_TRACK_PROCESS) {
+    TrackProcess(request->ProcessId);
+  } else if (request->type == TYPE_UNTRACK_PROCESS) {
+    UntrackedProcess(request->ProcessId);
+  } else {
+    SendUsage();
+  }
+
+	return STATUS_SUCCESS;
+}
+
 VOID ProcessCreateCallback(HANDLE ParentId, HANDLE ProcessId, BOOLEAN Create) {
 	UNREFERENCED_PARAMETER(ParentId);
-	PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Process %ul dectected\n", HandleToUlong(ProcessId)));
+	PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Process %u dectected\n", HandleToUlong(ProcessId)));
 	if (ClientPort != NULL) {
 		PROCESS_MESSAGE msg={0};
     RtlZeroMemory(&msg, sizeof(msg));
 		msg.ProcessId = HandleToULong(ProcessId);
 		msg.IsCreate = Create;
 		NTSTATUS status;
+    // PROCESS_REPLY reply;
 		ULONG replyLength;
-		status = FltSendMessage(FilterHandle, &ClientPort, &msg, sizeof(msg), NULL, &replyLength, 0);
+    LARGE_INTEGER timeout;
+    timeout.QuadPart = -(500LL * 10000);
 		PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Process Message sent\n"));
-	}
+    status = FltSendMessage(FilterHandle, &ClientPort, &msg, sizeof(msg), NULL, &replyLength, &timeout);
+    // if (NT_SUCCESS(status)) {
+    //   if (reply.IsTracked) {
+    //     PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Process replied: tracking process\n"));
+    //   } else {
+    //     PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Process replied: untracking process\n"));
+    //   }
+    // }
+  }
 }
 
 NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING RegistryPath) {
 	UNREFERENCED_PARAMETER(RegistryPath);
 	NTSTATUS status;
-	OBJECT_ATTRIBUTES oa;
+	OBJECT_ATTRIBUTES oa, usageOa;
 	UNICODE_STRING PortName = RTL_CONSTANT_STRING(L"\\DiskIoFilterPort");
+	UNICODE_STRING UsagePortName = RTL_CONSTANT_STRING(L"\\UsageDiskIoFilterPort");
 	PSECURITY_DESCRIPTOR sd;
+	PSECURITY_DESCRIPTOR usageSd;
+
+  InitializeListHead(&g_TrackedList);
 
 	status  = FltBuildDefaultSecurityDescriptor(&sd, FLT_PORT_ALL_ACCESS);
+	status  = FltBuildDefaultSecurityDescriptor(&usageSd, FLT_PORT_ALL_ACCESS);
 	if (!NT_SUCCESS(status)) {
 		PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Build sd failed\n"));
 		return status;
@@ -130,14 +283,17 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 	}
 
 	InitializeObjectAttributes(&oa, &PortName, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, sd);
+	InitializeObjectAttributes(&usageOa, &UsagePortName, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, usageSd);
 	status = FltRegisterFilter(DriverObject, &FilterRegistration, &FilterHandle);
 	if (!NT_SUCCESS(status)) {
 		PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Registration failed\n"));
 		return status;
 	}
 
-	status = FltCreateCommunicationPort(FilterHandle, &ServerPort, &oa, NULL, DiskIoConnect, DiskIoDisconnect, DiskIoMessage, 1);
+	status = FltCreateCommunicationPort(FilterHandle, &ServerPort, &oa, NULL, ProcessPortConnect, ProcessPortDisconnect, ProcessPortMessage, 1);
+	status = FltCreateCommunicationPort(FilterHandle, &UsageServerPort, &usageOa, NULL, UsagePortConnect, UsagePortDisconnect, UsagePortMessage, 1);
   FltFreeSecurityDescriptor(sd);
+  FltFreeSecurityDescriptor(usageSd);
 	if (NT_SUCCESS(status)) {
 		status = FltStartFiltering(FilterHandle);
 		if (!NT_SUCCESS(status)) {
@@ -178,17 +334,8 @@ FLT_POSTOP_CALLBACK_STATUS PostIoCallback(PFLT_CALLBACK_DATA Data, PCFLT_RELATED
 	UNREFERENCED_PARAMETER(CompletionContext);
 	UNREFERENCED_PARAMETER(Flags);
 	UNREFERENCED_PARAMETER(Data);
-	// HANDLE pid = PsGetCurrentProcessId();
-	// ULONG64 bytes = Data->IoStatus.Information;
-	// PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskioDriver: PostIo called"));
-	// if (ClientPort != NULL) {
-	// 	IO_MESSAGE msg;
-	// 	msg.ProcessId = (ULONG_PTR)pid;
-	// 	msg.bytes = bytes;
-	// 	NTSTATUS status;
-	// 	ULONG replyLength;
-	// 	status = FltSendMessage(FilterHandle, &ClientPort, &msg, sizeof(IO_MESSAGE), NULL, &replyLength, 0);
-	// 	PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Message sent\n"));
-	// }
+	ULONG pid = FltGetRequestorProcessId(Data);
+	ULONG64 bytes = Data->IoStatus.Information;
+  UpdateStat(pid, bytes);
 	return FLT_POSTOP_FINISHED_PROCESSING;
 }

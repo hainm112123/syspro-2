@@ -50,16 +50,36 @@ public:
     ProcessInfo(ProcessStat _limit) : limit(_limit) {}
   };
 
-  typedef struct _IO_MESSAGE {
-    FILTER_MESSAGE_HEADER MessageHeader;
-    ULONG_PTR ProcessId;
-    ULONG64 bytes;
-  } IO_MESSAGE, * PIO_MESSAGE;
-
   typedef struct _PROCESS_MESSAGE {
     ULONG ProcessId;
     BOOLEAN IsCreate;
   } PROCESS_MESSAGE, *PPROCESS_MESSAGE;
+
+  // typedef struct _PROCESS_REPLY {
+  //   FILTER_REPLY_HEADER ReplyHeader;
+  //   BOOLEAN IsTracked;
+  // } PROCESS_REPLY, *PPROCESS_REPLY;
+
+  const enum TRACK_REQUEST_TYPE {
+    TYPE_TRACK_PROCESS = 0,
+    TYPE_UNTRACK_PROCESS,
+    TYPE_REQUEST_STAT
+  };
+
+  typedef struct _TRACK_REQUEST {
+    enum TRACK_REQUEST_TYPE type;
+    ULONG ProcessId;
+  } TRACK_REQUEST, *PTRACK_REQUEST;
+
+  typedef struct _PROCESS_USAGE_ENTRY {
+    ULONG ProcessId;
+    ULONG IoBytes;
+  } PROCESS_USAGE_ENTRY, *PPROCESS_USAGE_ENTRY;
+
+  typedef struct _PROCESS_USAGE_LIST {
+    ULONG Count;
+    PROCESS_USAGE_ENTRY Entries[1];
+  } PROCESS_USAGE_LIST, *PPROCESS_USAGE_LIST;
 
 private:
   const std::wstring FILE_MAP_NAME = _TEXT("SharedOveruseEventRing");
@@ -71,6 +91,7 @@ private:
   ULONGLONG lastSysTime = 0;
   SharedRing* ring = nullptr;
   HANDLE hEvent;
+  HANDLE hUsagePort;
   std::queue<OveruseEvent> events;
 
 public:
@@ -90,7 +111,9 @@ public:
   void sample();
   void run();
   void addEvent(const OveruseEvent &event);
-  static VOID WINAPI EventRecordCallback(PEVENT_RECORD pEventRecord);
+  void handleProcessMessage(HANDLE hPort, const BYTE* buffer);
+  void sendTrackRequest(HANDLE hPort, TRACK_REQUEST request);
+  void getUsage();
 };
 
 
