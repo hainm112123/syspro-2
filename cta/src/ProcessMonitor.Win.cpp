@@ -16,7 +16,9 @@ static std::wstring GetProcessNameByPid(DWORD pid) {
     }
     CloseHandle(hProcess);
   }
-  return name;
+  size_t pos = name.find_last_of(L"\\/");
+  if (pos == std::wstring::npos) return name;
+  return name.substr(pos + 1);
 }
 
 ProcessMonitor::ProcessMonitor(const std::vector<ProcessConfig> &configs, int _monitorInterval): monitorInterval(_monitorInterval) {
@@ -185,23 +187,55 @@ void ProcessMonitor::run() {
   }*/
 
   std::cout << "Start tracing...\n";
-  volatile bool isTracing = true;
+  HANDLE hStopTracing = CreateEvent(NULL, TRUE, FALSE, NULL);
   std::thread traceThread([&]() {
     //ProcessTrace(&hTrace, 1, nullptr, nullptr);
     HANDLE hPort;
     HRESULT hResult = FilterConnectCommunicationPort(L"\\DiskIoFilterPort", 0, NULL, 0, NULL, &hPort);
     if (IS_ERROR(hResult)) {
-      printf("Cannot connect to filter's port...");
+      printf("Cannot connect to filter's port...\n");
       return;
     }
-    IO_MESSAGE msg;
-    while (isTracing) {
+    while (1) {
       // FilterGetMessage(hPort, &msg.MessageHeader, sizeof(IO_MESSAGE), NULL);
       // addIoCount(msg.bytes, msg.ProcessId);
-      FilterGetMessage(hPort, &msg.MessageHeader, sizeof(PROCESS_MESSAGE), NULL);
-      DWORD pid = (DWORD)(msg.ProcessId);
-      std::cout << pid << " " << wstringToString(GetProcessNameByPid(pid)) << "\n";
+      BYTE buffer[sizeof(FILTER_MESSAGE_HEADER) + sizeof(PROCESS_MESSAGE)];
+      auto message = (FILTER_MESSAGE_HEADER*)buffer;
+      OVERLAPPED ov = {0};
+      RtlZeroMemory(&ov, sizeof(ov));
+      ov.hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+      hResult = FilterGetMessage(hPort, message, sizeof(buffer), &ov);
+      if (hResult == HRESULT_FROM_WIN32(ERROR_IO_PENDING)) {
+        HANDLE waiters[] = {hStopTracing, ov.hEvent};
+        DWORD idx = WaitForMultipleObjects(2, waiters, FALSE, INFINITE);
+        printf("Event notified: %u\n", idx);
+        if (idx - WAIT_OBJECT_0 == 0) {
+          CancelIoEx(hPort, &ov);
+          WaitForSingleObject(ov.hEvent, 1000);
+          printf("Exit tracing loop...\n");
+          break;
+        }
+        DWORD bytes;
+        if (GetOverlappedResult(hPort, &ov, &bytes, FALSE)) {
+          auto msg = (PPROCESS_MESSAGE)(buffer + sizeof(FILTER_MESSAGE_HEADER));
+          DWORD pid = (DWORD)(msg->ProcessId);
+          std::cout << pid << " " << (int)msg->IsCreate << " " << wstringToString(GetProcessNameByPid(pid)) << "\n";
+        } else {
+          printf("GetOverlappedResult failed: %u\n", GetLastError());
+          break;
+        }
+      } else if (SUCCEEDED(hResult)) {
+        auto msg = (PPROCESS_MESSAGE)(buffer + sizeof(FILTER_MESSAGE_HEADER));
+        DWORD pid = (DWORD)(msg->ProcessId);
+        std::cout << pid << " " << (int)msg->IsCreate << " " << wstringToString(GetProcessNameByPid(pid)) << "\n";
+      }
+      else {
+        std::cout << "Get message failed with code: " << HRESULT_CODE(hResult) << "\n";
+        break;
+      }
     }
+    CloseHandle(hPort);
+    printf("Tracing thread exited\n");
   });
 
   //...................................MMAP......................................
@@ -231,6 +265,7 @@ void ProcessMonitor::run() {
   while (1) {
     if (_kbhit()) {
       char c = _getch();
+      printf("Keyboard hit: %c\n", c);
       if (c == 'q') break;
     }
     scan();
@@ -246,8 +281,13 @@ void ProcessMonitor::run() {
   //.....................................................................
   //CloseTrace(hTrace);
   //ControlTrace(hSession, KERNEL_LOGGER_NAME, pSessionProperties, EVENT_TRACE_CONTROL_STOP);
-  isTracing = false;
-  traceThread.join();
+  if (!SetEvent(hStopTracing)) {
+    printf("Failed to set stop tracing event...\n");
+  } else {
+    printf("Stop tracing event set..\n");
+    traceThread.join();
+    printf("Tracing thread joined\n");
+  }
   //free(pSessionProperties);
 }
 

@@ -57,7 +57,6 @@ public:
   } IO_MESSAGE, * PIO_MESSAGE;
 
   typedef struct _PROCESS_MESSAGE {
-    FILTER_MESSAGE_HEADER MessageHeader;
     ULONG ProcessId;
     BOOLEAN IsCreate;
   } PROCESS_MESSAGE, *PPROCESS_MESSAGE;

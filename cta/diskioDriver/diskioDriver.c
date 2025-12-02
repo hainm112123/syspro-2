@@ -14,13 +14,10 @@ typedef struct _IO_MESSAGE {
 	ULONG64 bytes;
 } IO_MESSAGE, *PIO_MESSAGE;
 
-#pragma pack(push, 1)
 typedef struct _PROCESS_MESSAGE {
-	FILTER_MESSAGE_HEADER MessageHeader;
 	ULONG ProcessId;
 	BOOLEAN IsCreate;
 } PROCESS_MESSAGE, *PPROCESS_MESSAGE;
-#pragma pack(pop)
 
 DRIVER_INITIALIZE DriverEntry;
 NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING RegistryPath);
@@ -81,6 +78,7 @@ NTSTATUS DiskIoMessage(PVOID ConnectionCookie, PVOID InputBuffer, ULONG InputBuf
 
 VOID ProcessCreateCallbackEx(PEPROCESS Process, HANDLE ProcessId, PPS_CREATE_NOTIFY_INFO CreateInfo) {
 	UNREFERENCED_PARAMETER(Process);
+	PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Process %ul dectected\n", HandleToUlong(ProcessId)));
 	if (ClientPort != NULL) {
 		PROCESS_MESSAGE msg;
 		msg.ProcessId = HandleToUlong(ProcessId);
@@ -98,13 +96,15 @@ VOID ProcessCreateCallbackEx(PEPROCESS Process, HANDLE ProcessId, PPS_CREATE_NOT
 
 VOID ProcessCreateCallback(HANDLE ParentId, HANDLE ProcessId, BOOLEAN Create) {
 	UNREFERENCED_PARAMETER(ParentId);
+	PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Process %ul dectected\n", HandleToUlong(ProcessId)));
 	if (ClientPort != NULL) {
-		PROCESS_MESSAGE msg;
+		PROCESS_MESSAGE msg={0};
+    RtlZeroMemory(&msg, sizeof(msg));
 		msg.ProcessId = HandleToULong(ProcessId);
 		msg.IsCreate = Create;
 		NTSTATUS status;
 		ULONG replyLength;
-		status = FltSendMessage(FilterHandle, &ClientPort, &msg, sizeof(PROCESS_MESSAGE), NULL, &replyLength, 0);
+		status = FltSendMessage(FilterHandle, &ClientPort, &msg, sizeof(msg), NULL, &replyLength, 0);
 		PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Process Message sent\n"));
 	}
 }
@@ -137,6 +137,7 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 	}
 
 	status = FltCreateCommunicationPort(FilterHandle, &ServerPort, &oa, NULL, DiskIoConnect, DiskIoDisconnect, DiskIoMessage, 1);
+  FltFreeSecurityDescriptor(sd);
 	if (NT_SUCCESS(status)) {
 		status = FltStartFiltering(FilterHandle);
 		if (!NT_SUCCESS(status)) {
