@@ -36,7 +36,7 @@ typedef struct _TRACK_REQUEST {
 
 typedef struct _PROCESS_USAGE_ENTRY {
   ULONG ProcessId;
-  ULONG IoBytes;
+  ULONG64 IoBytes;
 } PROCESS_USAGE_ENTRY, *PPROCESS_USAGE_ENTRY;
 
 typedef struct _PROCESS_USAGE_LIST {
@@ -100,7 +100,7 @@ VOID ProcessCreateCallbackEx(PEPROCESS Process, HANDLE ProcessId, PPS_CREATE_NOT
 
 VOID TrackProcess(ULONG pid) {
   KIRQL oldIrql;
-  KeAcquireQueuedSpinLock(&g_TrackedLock, &oldIrql);
+  KeAcquireSpinLock(&g_TrackedLock, &oldIrql);
 
   PPROCESS_STAT entry = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(PROCESS_STAT), 'uLsP');
   entry->ProcessId = pid;
@@ -112,13 +112,13 @@ VOID TrackProcess(ULONG pid) {
 
 VOID UntrackedProcess(ULONG pid) {
   KIRQL oldIrql;
-  KeAcquireQueuedSpinLock(&g_TrackedLock, &oldIrql);
+  KeAcquireSpinLock(&g_TrackedLock, &oldIrql);
 
   for (PLIST_ENTRY entry = g_TrackedList.Flink; entry != &g_TrackedList; entry = entry->Flink) {
     PPROCESS_STAT p = CONTAINING_RECORD(entry, PROCESS_STAT, ListEntry);
     if (p->ProcessId == pid) {
       RemoveEntryList(entry);
-      ExFreePoolWithTag(p, "pTsI");
+      ExFreePoolWithTag(p, 'pTsI');
       g_TrackedCount --;
       break;
     }
@@ -129,7 +129,7 @@ VOID UntrackedProcess(ULONG pid) {
 
 VOID UpdateStat(ULONG pid, ULONG64 bytes) {
   KIRQL oldIrql;
-  KeAcquireQueuedSpinLock(&g_TrackedLock, &oldIrql);
+  KeAcquireSpinLock(&g_TrackedLock, &oldIrql);
 
   for (PLIST_ENTRY entry = g_TrackedList.Flink; entry != &g_TrackedList; entry = entry->Flink) {
     PPROCESS_STAT p = CONTAINING_RECORD(entry, PROCESS_STAT, ListEntry);
@@ -142,15 +142,16 @@ VOID UpdateStat(ULONG pid, ULONG64 bytes) {
   KeReleaseSpinLock(&g_TrackedLock, oldIrql);
 }
 
-VOID SendUsage() {
+VOID SendUsage(PVOID Context) {
+  UNREFERENCED_PARAMETER(Context);
   ULONG bufSize = sizeof(PROCESS_USAGE_LIST) + (g_TrackedCount - 1) * sizeof(PROCESS_USAGE_ENTRY);
   PPROCESS_USAGE_LIST usage = ExAllocatePoolZero(NonPagedPoolNx, bufSize, 'uLsP');
-  if (!usage) return STATUS_INSUFFICIENT_RESOURCES;
+  if (!usage) return;
   usage->Count = g_TrackedCount;
   ULONG i = 0;
 
   KIRQL oldIrql;
-  KeAcquireQueuedSpinLock(&g_TrackedLock, &oldIrql);
+  KeAcquireSpinLock(&g_TrackedLock, &oldIrql);
   for (PLIST_ENTRY entry = g_TrackedList.Flink; entry != &g_TrackedList; entry = entry->Flink) {
     PPROCESS_STAT p = CONTAINING_RECORD(entry, PROCESS_STAT, ListEntry);
     usage->Entries[i].ProcessId = p->ProcessId;
@@ -163,7 +164,7 @@ VOID SendUsage() {
   ULONG replyLength = 0;
   LARGE_INTEGER timeout;
   timeout.QuadPart = -(500LL * 10000);
-  NTSTATUS status = FltSendMessage(FilterHandle, &UsageClientPort, usage, bufSize, NULL, replyLength, &timeout);
+  NTSTATUS status = FltSendMessage(FilterHandle, &UsageClientPort, usage, bufSize, NULL, &replyLength, &timeout);
   if (NT_SUCCESS(status)) {
     PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Send usage succeeded\n"));
   } else {
@@ -202,8 +203,10 @@ NTSTATUS UsagePortConnect(PFLT_PORT _ClientPort, PVOID ServerPortCookie, PVOID C
 	UNREFERENCED_PARAMETER(ConnectionContext);
 	UNREFERENCED_PARAMETER(SizeOfContext);
 	UNREFERENCED_PARAMETER(ConnectionCookie);
-	UsageClientPort = _ClientPort;
   PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Usage Communication port connected\n"));
+	UsageClientPort = _ClientPort;
+  InitializeListHead(&g_TrackedList);
+  g_TrackedCount = 0;
 	return STATUS_SUCCESS;
 }
 
@@ -211,6 +214,12 @@ VOID UsagePortDisconnect(PVOID ConnectionCookie) {
 	UNREFERENCED_PARAMETER(ConnectionCookie);
 	PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Usage Communication port disconnected\n"));
 	UsageClientPort = NULL;
+  while (!IsListEmpty(&g_TrackedList)) {
+    PLIST_ENTRY entry = RemoveHeadList(&g_TrackedList);
+    PPROCESS_STAT p = CONTAINING_RECORD(entry, PROCESS_STAT, ListEntry);
+    ExFreePoolWithTag(p, 'pTsI');
+  }
+  g_TrackedCount = 0;
 }
 
 NTSTATUS UsagePortMessage(PVOID ConnectionCookie, PVOID InputBuffer, ULONG InputBufferSize, PVOID OutputBuffer, ULONG OutputBufferSize, PULONG ReturnOutputBufferLength) {
@@ -221,12 +230,15 @@ NTSTATUS UsagePortMessage(PVOID ConnectionCookie, PVOID InputBuffer, ULONG Input
 
   if (InputBuffer == NULL || InputBufferSize < sizeof(TRACK_REQUEST)) return STATUS_INVALID_PARAMETER;
   PTRACK_REQUEST request = (PTRACK_REQUEST)(InputBuffer);
+  PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Received track requrest with type = %u, process = %u\n", request->type, request->ProcessId));
   if (request->type == TYPE_TRACK_PROCESS) {
     TrackProcess(request->ProcessId);
   } else if (request->type == TYPE_UNTRACK_PROCESS) {
     UntrackedProcess(request->ProcessId);
   } else {
-    SendUsage();
+    WORK_QUEUE_ITEM WorkItem;
+    ExInitializeWorkItem(&WorkItem, SendUsage, NULL);
+    ExQueueWorkItem(&WorkItem, DelayedWorkQueue);
   }
 
 	return STATUS_SUCCESS;
@@ -312,12 +324,17 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 
 NTSTATUS DiskIoUnload(_In_ FLT_FILTER_UNLOAD_FLAGS Flags) {
 	UNREFERENCED_PARAMETER(Flags);
-	PAGED_CODE();
+	// PAGED_CODE();
 	if (ClientPort != NULL) {
 		FltCloseClientPort(FilterHandle, &ClientPort);
 		ClientPort = NULL;
 	}
+  if (UsageClientPort != NULL) {
+    FltCloseClientPort(FilterHandle, &UsageClientPort);
+    UsageClientPort = NULL;
+  }
 	FltCloseCommunicationPort(ServerPort);
+  FltCloseCommunicationPort(UsageServerPort);
 	FltUnregisterFilter(FilterHandle);
 	return STATUS_SUCCESS;
 }

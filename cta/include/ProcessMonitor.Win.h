@@ -28,6 +28,7 @@
 #include <tdh.h>
 #include <evntcons.h>
 #include <fltuser.h>
+#include <wrl/wrappers/corewrappers.h>
 #pragma comment(lib, "tdh.lib")
 #pragma comment(lib, "advapi32.lib")
 
@@ -73,12 +74,12 @@ public:
 
   typedef struct _PROCESS_USAGE_ENTRY {
     ULONG ProcessId;
-    ULONG IoBytes;
+    ULONG64 IoBytes;
   } PROCESS_USAGE_ENTRY, *PPROCESS_USAGE_ENTRY;
 
   typedef struct _PROCESS_USAGE_LIST {
     ULONG Count;
-    PROCESS_USAGE_ENTRY Entries[1];
+    PROCESS_USAGE_ENTRY Entries[];
   } PROCESS_USAGE_LIST, *PPROCESS_USAGE_LIST;
 
 private:
@@ -93,16 +94,17 @@ private:
   HANDLE hEvent;
   HANDLE hUsagePort;
   std::queue<OveruseEvent> events;
+  SRWLOCK procLock;
 
 public:
   ProcessMonitor(const std::vector<ProcessConfig>& configs, int _monitorInterval = 1);
   ~ProcessMonitor();
 
-  void addIoCount(ULONG dataSize, DWORD pid) {
-    procInfo[pid]->curIo += dataSize;
+  void addIoCount(ULONG64 dataSize, DWORD pid) {
+    if (procInfo.count(pid)) procInfo[pid]->curIo += dataSize;
   }
-  void addNetCount(ULONG dataSize, DWORD pid) {
-    procInfo[pid]->curNet += dataSize;
+  void addNetCount(ULONG64 dataSize, DWORD pid) {
+    if (procInfo.count(pid)) procInfo[pid]->curNet += dataSize;
   }
 
   void SetConfigs(const std::vector<ProcessConfig>& configs);

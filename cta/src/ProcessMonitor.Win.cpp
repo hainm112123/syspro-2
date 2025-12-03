@@ -22,10 +22,18 @@ static std::wstring GetProcessNameByPid(DWORD pid) {
 }
 
 ProcessMonitor::ProcessMonitor(const std::vector<ProcessConfig> &configs, int _monitorInterval): monitorInterval(_monitorInterval) {
+  HRESULT hResult = FilterConnectCommunicationPort(L"\\UsageDiskIoFilterPort", 0, NULL, 0, NULL, &hUsagePort);
+  if (IS_ERROR(hResult)) {
+    printf("Cannot connect to filter's usage port...\n");
+    return;
+  }
+  printf("Connected to filter's usage port\n");
+  procLock = SRWLOCK_INIT;
   SetConfigs(configs);
 }
 
 ProcessMonitor::~ProcessMonitor() {
+  CloseHandle(hUsagePort);
   clean();
 }
 
@@ -78,29 +86,49 @@ static void getStats(ProcessMonitor::ProcessInfo& info, ULONGLONG sysDelta, doub
   std::chrono::duration<double> elapsed = now - info.lastTime;
   cpu = (sysDelta > 0 && procTime > 0) ? 100.0 * (double)(procTime - info.lastProcTime) / sysDelta : 0.0;
   memory /= (1024.0 * 1024);
-  double curIo = info.curIo, curNet = info.curNet;
-  disk = (double)(curIo - info.lastIo) / (1024.0 * 1024 * elapsed.count());
-  network = (double)(curNet - info.lastNet) / (1024.0 * elapsed.count());
-  info.lastIo = curIo;
-  info.lastNet = curNet;
+  disk = (double)(info.curIo) / (1024.0 * 1024 * elapsed.count());
+  network = (double)(info.curNet) / (1024.0 * elapsed.count());
+  // double curIo = info.curIo, curNet = info.curNet;
+  // disk = (double)(curIo - info.lastIo) / (1024.0 * 1024 * elapsed.count());
+  // network = (double)(curNet - info.lastNet) / (1024.0 * elapsed.count());
+  // info.lastIo = curIo;
+  // info.lastNet = curNet;
   info.lastProcTime = procTime;
 }
 
 //..................main....................................................................................................
 
 void ProcessMonitor::sendTrackRequest(HANDLE hPort, TRACK_REQUEST request) {
-
+  // printf("Send track request type: %u, process: %u\n", request.type, request.ProcessId);
+  DWORD bytesReturned;
+  FilterSendMessage(hPort, &request, sizeof(TRACK_REQUEST), NULL, 0, &bytesReturned);
 }
 
 void ProcessMonitor::getUsage() {
-  
+  sendTrackRequest(hUsagePort, {TYPE_REQUEST_STAT, 0});
+  BYTE buffer[1024 * 64];
+  auto message = (PFILTER_MESSAGE_HEADER)buffer;
+  HRESULT hResult = FilterGetMessage(hUsagePort, message, sizeof(buffer), NULL);
+  if (SUCCEEDED(hResult)) {
+    auto usageList = (PPROCESS_USAGE_LIST)(buffer + sizeof(FILTER_MESSAGE_HEADER));
+    for (int i = 0; i < usageList->Count; ++ i) {
+      addIoCount(usageList->Entries[i].IoBytes, usageList->Entries[i].ProcessId);
+    }
+    printf("Succeeded get usage for %u processes\n", usageList->Count);
+  } else {
+    printf("Get usage failed...\n");
+  }
 }
 
 void ProcessMonitor::scan() {
+  AcquireSRWLockExclusive(&procLock);
   for (auto &[name, info]: processes) info.pids.clear();
   procInfo.clear();
   HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-  if (snapshot == INVALID_HANDLE_VALUE) return;
+  if (snapshot == INVALID_HANDLE_VALUE) {
+    ReleaseSRWLockExclusive(&procLock);
+    return;
+  }
   PROCESSENTRY32 entry{ sizeof(entry) };
   if (Process32First(snapshot, &entry)) {
     do {
@@ -108,9 +136,11 @@ void ProcessMonitor::scan() {
       if (processes.find(pname) != processes.end()) {
         processes[pname].pids.push_back(entry.th32ProcessID);
         procInfo[entry.th32ProcessID] = &processes[pname];
+        sendTrackRequest(hUsagePort, {TYPE_TRACK_PROCESS, entry.th32ProcessID});
       }
     } while (Process32Next(snapshot, &entry));
   }
+  ReleaseSRWLockExclusive(&procLock);
   CloseHandle(snapshot);
 }
 
@@ -119,10 +149,12 @@ void ProcessMonitor::handleProcessMessage(HANDLE hPort, const BYTE* buffer) {
   msg->IsCreate = (bool)(int)(msg->IsCreate);
   auto pname = GetProcessNameByPid(msg->ProcessId);
   if (processes.count(pname) > 0) {
+    AcquireSRWLockExclusive(&procLock);
     auto &pids = processes[pname].pids;
     if (msg->IsCreate) {
       pids.push_back(msg->ProcessId);
       procInfo[msg->ProcessId] = &processes[pname];
+      sendTrackRequest(hPort, {TYPE_TRACK_PROCESS, msg->ProcessId});
     } else {
       auto it = std::remove_if(pids.begin(), pids.end(), [msg](const auto &pid){
         return pid == msg->ProcessId;
@@ -130,10 +162,9 @@ void ProcessMonitor::handleProcessMessage(HANDLE hPort, const BYTE* buffer) {
       pids.erase(it, pids.end());
       auto it2 = procInfo.find(msg->ProcessId);
       if (it2 != procInfo.end()) procInfo.erase(it2);
+      sendTrackRequest(hPort, {TYPE_UNTRACK_PROCESS, msg->ProcessId});
     }
-    sendTrackRequest(hPort, {TYPE_TRACK_PROCESS, msg->ProcessId});
-  } else {
-    sendTrackRequest(hPort, {TYPE_UNTRACK_PROCESS, msg->ProcessId});
+    ReleaseSRWLockExclusive(&procLock);
   }
 }
 
@@ -149,6 +180,14 @@ void ProcessMonitor::sample() {
   }
   lastSysTime = sysKernelNowU + sysUserNowU;
 
+  // printf("Tried to acquire lock to monitoring...\n");
+  AcquireSRWLockShared(&procLock);
+  // printf("Acquried lock to monitoring.\n");
+  for (auto &[name, info]: processes) {
+    info.curIo = 0;
+    info.curNet = 0;
+  }
+  getUsage();
   for (auto &[name, info]: processes) {
     double cpu = 0, memory = 0, disk = 0, network = 0;
     getStats(info, sysDelta, cpu, memory, disk, network);
@@ -160,17 +199,12 @@ void ProcessMonitor::sample() {
     if (disk > info.limit.disk) addEvent(OveruseEvent(info.pids[0], wstringToString(name), "disk", disk, get_timestamp()));
     if (network > info.limit.network) addEvent(OveruseEvent(info.pids[0], wstringToString(name), "network", network, get_timestamp()));
   }
+  ReleaseSRWLockShared(&procLock);
 }
 
 void ProcessMonitor::run() {
   std::cout << "Start tracing...\n";
-
-  HRESULT hResult = FilterConnectCommunicationPort(L"\\UsageDiskIoFilterPort", 0, NULL, 0, NULL, &hUsagePort);
-  if (IS_ERROR(hResult)) {
-    printf("Cannot connect to filter's usage port...\n");
-    return;
-  }
-
+  //...........................Tracing thread.....................................................................
   HANDLE hStopTracing = CreateEvent(NULL, TRUE, FALSE, NULL);
   std::thread traceThread([&]() {
     HANDLE hPort;
@@ -237,6 +271,7 @@ void ProcessMonitor::run() {
   ring->head = 0;
   ring->tail = 0;
 
+  //...................monitoring...................................................
   printf("Start monitoring....\n");
   printf("Press q to quit.\n");
   while (1) {
@@ -254,7 +289,6 @@ void ProcessMonitor::run() {
   CloseHandle(hEvent);
   UnmapViewOfFile(ring);
   CloseHandle(hMap);
-  CloseHandle(hUsagePort);
 
   //.....................................................................
   if (!SetEvent(hStopTracing)) {
