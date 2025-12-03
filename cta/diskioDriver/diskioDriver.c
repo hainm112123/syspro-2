@@ -1,5 +1,5 @@
+#include "networkCallout.h"
 #include <fltkernel.h>
-#include <ntifs.h>
 
 #define PTDBG_TRACE_ROUTINES            0x00000001
 #define PTDBG_TRACE_OPERATION_STATUS    0x00000002
@@ -306,25 +306,30 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 	status = FltCreateCommunicationPort(FilterHandle, &UsageServerPort, &usageOa, NULL, UsagePortConnect, UsagePortDisconnect, UsagePortMessage, 1);
   FltFreeSecurityDescriptor(sd);
   FltFreeSecurityDescriptor(usageSd);
-	if (NT_SUCCESS(status)) {
-		status = FltStartFiltering(FilterHandle);
-		if (!NT_SUCCESS(status)) {
-			PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Failed to start filtering\n"));
-			FltUnregisterFilter(FilterHandle);
-		}
-		else {
-			PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Start filtering\n"));
-		}
-	}
-	else {
+	if (!NT_SUCCESS(status)) {
 		PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Failed to create Communication port\n"));
+    return status;
 	}
-	return status;
+
+  status = FltStartFiltering(FilterHandle);
+  if (!NT_SUCCESS(status)) {
+    PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Failed to start filtering\n"));
+    FltUnregisterFilter(FilterHandle);
+    return status;
+  }
+  PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Start filtering\n"));
+  
+  // status = RegisterNetworkCallout();
+  RegisterNetworkCallout();
+
+  return status;
 }
 
 NTSTATUS DiskIoUnload(_In_ FLT_FILTER_UNLOAD_FLAGS Flags) {
 	UNREFERENCED_PARAMETER(Flags);
 	// PAGED_CODE();
+
+  UnregisterNetworkCallout();
 	if (ClientPort != NULL) {
 		FltCloseClientPort(FilterHandle, &ClientPort);
 		ClientPort = NULL;
