@@ -17,12 +17,6 @@ typedef struct _PROCESS_REPLY {
   BOOLEAN IsTracked;
 } PROCESS_REPLY, *PPROCESS_REPLY;
 
-typedef struct _PROCESS_STAT {
-  ULONG ProcessId;
-  ULONG64 IoBytes;
-  LIST_ENTRY ListEntry;
-} PROCESS_STAT, *PPROCESS_STAT;
-
 const enum TRACK_REQUEST_TYPE {
   TYPE_TRACK_PROCESS = 0,
   TYPE_UNTRACK_PROCESS,
@@ -37,6 +31,7 @@ typedef struct _TRACK_REQUEST {
 typedef struct _PROCESS_USAGE_ENTRY {
   ULONG ProcessId;
   ULONG64 IoBytes;
+  ULONG64 NetBytes;
 } PROCESS_USAGE_ENTRY, *PPROCESS_USAGE_ENTRY;
 
 typedef struct _PROCESS_USAGE_LIST {
@@ -161,6 +156,7 @@ VOID SendUsage(PVOID Context) {
     PPROCESS_STAT p = CONTAINING_RECORD(entry, PROCESS_STAT, ListEntry);
     usage->Entries[i].ProcessId = p->ProcessId;
     usage->Entries[i].IoBytes = p->IoBytes;
+    usage->Entries[i].NetBytes = p->NetBytes;
     p->IoBytes = 0;
     i ++;
   }
@@ -212,6 +208,8 @@ NTSTATUS UsagePortConnect(PFLT_PORT _ClientPort, PVOID ServerPortCookie, PVOID C
   PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Usage Communication port connected\n"));
 	UsageClientPort = _ClientPort;
   InitializeListHead(&g_TrackedList);
+  KeInitializeSpinLock(&g_TrackedLock);
+  UpdateTrackedListLock(&g_TrackedList, &g_TrackedLock);
   g_TrackedCount = 0;
 	return STATUS_SUCCESS;
 }
@@ -282,6 +280,8 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 	PSECURITY_DESCRIPTOR usageSd;
 
   InitializeListHead(&g_TrackedList);
+  KeInitializeSpinLock(&g_TrackedLock);
+  UpdateTrackedListLock(&g_TrackedList, &g_TrackedLock);
   ExInitializeRundownProtection(&g_RundownRef);
 
 	status = FltBuildDefaultSecurityDescriptor(&sd, FLT_PORT_ALL_ACCESS);

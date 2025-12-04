@@ -75,6 +75,7 @@ public:
   typedef struct _PROCESS_USAGE_ENTRY {
     ULONG ProcessId;
     ULONG64 IoBytes;
+    ULONG64 NetBytes;
   } PROCESS_USAGE_ENTRY, *PPROCESS_USAGE_ENTRY;
 
   typedef struct _PROCESS_USAGE_LIST {

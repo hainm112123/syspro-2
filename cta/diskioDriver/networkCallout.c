@@ -40,30 +40,146 @@ typedef struct _NET_FILTER {
   const GUID *callout;
 } NET_FILTER, *PNET_FILTER;
 
+typedef struct _FLOW_ENTRY {
+  UINT64 flowHandle;
+  UINT64 processId;
+} FLOW_ENTRY, *PFLOW_ENTRY;
+
+RTL_AVL_TABLE g_FlowTable;
+EX_PUSH_LOCK g_FlowTableLock;
+PLIST_ENTRY TrackedList = NULL; 
+PKSPIN_LOCK TrackedLock = NULL;
+
+RTL_GENERIC_COMPARE_RESULTS NTAPI FlowCompare(RTL_AVL_TABLE* Table, PVOID FirstStruct, PVOID SecondStruct) {
+  UNREFERENCED_PARAMETER(Table);
+  UINT64 key1 = ((PFLOW_ENTRY)FirstStruct)->flowHandle;
+  UINT64 key2 = ((PFLOW_ENTRY)SecondStruct)->flowHandle;
+
+  if (key1 < key2) return GenericLessThan;
+  if (key1 > key2) return GenericGreaterThan;
+
+  return GenericEqual;
+}
+
+PVOID NTAPI FlowAllocate(RTL_AVL_TABLE* Table, CLONG ByteSize) {
+  UNREFERENCED_PARAMETER(Table);
+  return ExAllocatePoolZero(NonPagedPoolNx, ByteSize, 'lfWF');
+}
+
+VOID NTAPI FlowFree(RTL_AVL_TABLE* Table, PVOID Buffer) {
+  UNREFERENCED_PARAMETER(Table);
+  ExFreePoolWithTag(Buffer, 'lfWF');
+}
+
+VOID InitializeFlowTable() {
+  ExInitializePushLock(&g_FlowTableLock);
+  RtlInitializeGenericTableAvl(&g_FlowTable, FlowCompare, FlowAllocate, FlowFree, NULL);
+}
+
+NTSTATUS InsertFlow(UINT64 flowHandle, UINT64 pid) {
+  PFLOW_ENTRY entry = ExAllocatePoolZero(NonPagedPoolNx, sizeof(FLOW_ENTRY), 'lfWF');
+  if (!entry) return STATUS_INSUFFICIENT_RESOURCES;
+
+  entry->flowHandle = flowHandle;
+  entry->processId = pid;
+
+  BOOLEAN newEntry;
+  ExAcquirePushLockExclusive(&g_FlowTableLock);
+  RtlInsertElementGenericTableAvl(
+      &g_FlowTable,
+      entry,
+      sizeof(FLOW_ENTRY),
+      &newEntry
+  );
+  ExReleasePushLockExclusive(&g_FlowTableLock);
+
+  if (!newEntry) {
+    ExFreePoolWithTag(entry, 'lfWF');
+  }
+
+  return STATUS_SUCCESS;
+}
+
+PFLOW_ENTRY LookupFlow(UINT64 flowHandle){
+  FLOW_ENTRY lookupKey = { 0 };
+  lookupKey.flowHandle = flowHandle;
+
+  ExAcquirePushLockShared(&g_FlowTableLock);
+  PFLOW_ENTRY result = RtlLookupElementGenericTableAvl(&g_FlowTable, &lookupKey);
+  ExReleasePushLockShared(&g_FlowTableLock);
+
+  return result;
+}
+
+BOOLEAN RemoveFlow(UINT64 flowHandle)
+{
+  FLOW_ENTRY lookupKey = { 0 };
+  lookupKey.flowHandle = flowHandle;
+
+  ExAcquirePushLockExclusive(&g_FlowTableLock);
+  BOOLEAN removed = RtlDeleteElementGenericTableAvl(&g_FlowTable, &lookupKey);
+  ExReleasePushLockExclusive(&g_FlowTableLock);
+
+  return removed;
+}
+
+VOID CleanupFlowTable() {
+  ExAcquirePushLockExclusive(&g_FlowTableLock);
+
+  PFLOW_ENTRY entry = NULL;
+  while ((entry = RtlGetElementGenericTableAvl(&g_FlowTable, 0)) != NULL) {
+      RtlDeleteElementGenericTableAvl(&g_FlowTable, entry);
+  }
+  ExReleasePushLockExclusive(&g_FlowTableLock);
+}
+
+VOID UpdateTrackedListLock(PVOID _TrackedList, PVOID _TrackedLock) {
+  TrackedList = (PLIST_ENTRY)_TrackedList;
+  _TrackedLock = (PKSPIN_LOCK)_TrackedLock;
+}
+
+VOID UpdateNetworkStat(ULONG pid, ULONG64 bytes) {
+  KIRQL oldIrql;
+  KeAcquireSpinLock(TrackedLock, &oldIrql);
+
+  for (PLIST_ENTRY entry = TrackedList->Flink; entry != TrackedList; entry = entry->Flink) {
+    PPROCESS_STAT p = CONTAINING_RECORD(entry, PROCESS_STAT, ListEntry);
+    if (p->ProcessId == pid) {
+      p->NetBytes += bytes;
+      break;
+    }
+  }
+
+  KeReleaseSpinLock(TrackedLock, oldIrql);
+}
 
 VOID OnCalloutClassify(
   const FWPS_INCOMING_VALUES0* inFixedValues, const FWPS_INCOMING_METADATA_VALUES0* inMetaValues, 
   VOID* layerData, const FWPS_FILTER0* filter, UINT64 flowContext, FWPS_CLASSIFY_OUT0* classifyOut
 ) {
   UNREFERENCED_PARAMETER(inFixedValues);
-  UNREFERENCED_PARAMETER(layerData);
   UNREFERENCED_PARAMETER(filter);
   UNREFERENCED_PARAMETER(flowContext);
   UNREFERENCED_PARAMETER(classifyOut);
   // DbgPrint("Callout called\n");
   // if ((inMetaValues->currentMetadataValues & FWPS_METADATA_FIELD_PROCESS_ID) == 0) return;
   // DbgPrint("Callout for process id: %u", (ULONG)inMetaValues->processId);
-  if (inFixedValues->layerId == FWPS_LAYER_ALE_FLOW_ESTABLISHED_V4) {
-
+  if (inFixedValues->layerId == FWPS_LAYER_ALE_FLOW_ESTABLISHED_V4 || inFixedValues->layerId == FWPS_LAYER_ALE_FLOW_ESTABLISHED_V6) {
+    UINT64 flowHandle = inMetaValues->flowHandle;
+    UINT64 pid = inMetaValues->processId;
+    InsertFlow(flowHandle, pid);
+    DbgPrint("NetworkCallout: Insert FlowHandle: %u, ProcessId: %u", (ULONG)flowHandle, (ULONG)pid);
   }
-  if (inFixedValues->layerId == FWPS_LAYER_ALE_FLOW_ESTABLISHED_V6) {
-
-  }
-  if (inFixedValues->layerId == FWPS_LAYER_STREAM_V4) {
-
-  }
-  if (inFixedValues->layerId == FWPS_LAYER_STREAM_V6) {
-
+  if (inFixedValues->layerId == FWPS_LAYER_STREAM_V4 || inFixedValues->layerId == FWPS_LAYER_STREAM_V6) {
+    UINT64 flowHandle = inMetaValues->flowHandle;
+    PFLOW_ENTRY entry = LookupFlow(flowHandle);
+    FWPS_STREAM_CALLOUT_IO_PACKET0* ioPacket = (FWPS_STREAM_CALLOUT_IO_PACKET0*)layerData;
+    ULONG64 bytes = 0;
+    if (ioPacket->streamData) bytes += ioPacket->streamData->dataLength;
+    if (entry) {
+      UpdateNetworkStat((ULONG)entry->processId, bytes);
+      DbgPrint("NetworkCallout: %u bytes through Flow FlowHandle: %u, ProcessId: %u", bytes, (ULONG)flowHandle, (ULONG)entry->processId);
+    }
   }
 }
 
@@ -117,10 +233,14 @@ BOOLEAN WfpKernelRegister(PVOID devObj) {
     DbgPrint("WFP Kernel register failed with status=0x%X\n", status);
     return FALSE;
   }
+
+  InitializeFlowTable();
+
   return TRUE;
 }
 
 VOID WfpKernelUnregister() {
+  CleanupFlowTable();
   const GUID* guids[] = {
     &GUID_CALLOUT_LAYER_ESTABLISHED_V4,
     &GUID_CALLOUT_LAYER_ESTABLISHED_V6,
@@ -141,13 +261,13 @@ DWORD RegisterProvider() {
   if (error) return error;
 
   FWPM_PROVIDER0 *provider;
-  error = FwpmProviderGetByKey(NULL, &GUID_WFP_NETWORK_PROVIDER, &provider);
+  error = FwpmProviderGetByKey0(hEngine, &GUID_WFP_NETWORK_PROVIDER, &provider);
   if (error != 0) {
     FWPM_PROVIDER0 reg = {0};
     WCHAR name[] = L"WFP NETWORK";
     reg.displayData.name = name;
     reg.providerKey = GUID_WFP_NETWORK_PROVIDER;
-    reg.flags = 0;
+    reg.flags = FWPM_PROVIDER_FLAG_PERSISTENT;
 
     error = FwpmProviderAdd0(hEngine, &reg, NULL);
   } else {

@@ -113,6 +113,7 @@ void ProcessMonitor::getUsage() {
     auto usageList = (PPROCESS_USAGE_LIST)(buffer + sizeof(FILTER_MESSAGE_HEADER));
     for (int i = 0; i < usageList->Count; ++ i) {
       addIoCount(usageList->Entries[i].IoBytes, usageList->Entries[i].ProcessId);
+      addNetCount(usageList->Entries[i].NetBytes, usageList->Entries[i].ProcessId);
     }
     printf("Succeeded get usage for %u processes\n", usageList->Count);
   } else {
