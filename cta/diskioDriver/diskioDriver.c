@@ -47,6 +47,7 @@ typedef struct _PROCESS_USAGE_LIST {
 LIST_ENTRY g_TrackedList;
 KSPIN_LOCK g_TrackedLock;
 ULONG g_TrackedCount;
+EX_RUNDOWN_REF g_RundownRef;
 
 DRIVER_INITIALIZE DriverEntry;
 NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING RegistryPath);
@@ -146,7 +147,10 @@ VOID SendUsage(PVOID Context) {
   UNREFERENCED_PARAMETER(Context);
   ULONG bufSize = sizeof(PROCESS_USAGE_LIST) + (g_TrackedCount - 1) * sizeof(PROCESS_USAGE_ENTRY);
   PPROCESS_USAGE_LIST usage = ExAllocatePoolZero(NonPagedPoolNx, bufSize, 'uLsP');
-  if (!usage) return;
+  if (!usage) {
+    ExReleaseRundownProtection(&g_RundownRef);
+    return;
+  }
   usage->Count = g_TrackedCount;
   ULONG i = 0;
 
@@ -170,6 +174,7 @@ VOID SendUsage(PVOID Context) {
   } else {
     PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Send usage failed\n"));
   }
+  ExReleaseRundownProtection(&g_RundownRef);
 }
 
 NTSTATUS ProcessPortConnect(PFLT_PORT _ClientPort, PVOID ServerPortCookie, PVOID ConnectionContext, ULONG SizeOfContext, PVOID* ConnectionCookie) {
@@ -237,8 +242,10 @@ NTSTATUS UsagePortMessage(PVOID ConnectionCookie, PVOID InputBuffer, ULONG Input
     UntrackedProcess(request->ProcessId);
   } else {
     WORK_QUEUE_ITEM WorkItem;
-    ExInitializeWorkItem(&WorkItem, SendUsage, NULL);
-    ExQueueWorkItem(&WorkItem, DelayedWorkQueue);
+    if (!ExAcquireRundownProtection(&g_RundownRef)) {
+      ExInitializeWorkItem(&WorkItem, SendUsage, NULL);
+      ExQueueWorkItem(&WorkItem, DelayedWorkQueue);
+    }
   }
 
 	return STATUS_SUCCESS;
@@ -247,26 +254,20 @@ NTSTATUS UsagePortMessage(PVOID ConnectionCookie, PVOID InputBuffer, ULONG Input
 VOID ProcessCreateCallback(HANDLE ParentId, HANDLE ProcessId, BOOLEAN Create) {
 	UNREFERENCED_PARAMETER(ParentId);
 	PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Process %u dectected\n", HandleToUlong(ProcessId)));
+  if (!ExAcquireRundownProtection(&g_RundownRef)) return;
 	if (ClientPort != NULL) {
 		PROCESS_MESSAGE msg={0};
     RtlZeroMemory(&msg, sizeof(msg));
 		msg.ProcessId = HandleToULong(ProcessId);
 		msg.IsCreate = Create;
 		NTSTATUS status;
-    // PROCESS_REPLY reply;
 		ULONG replyLength;
     LARGE_INTEGER timeout;
     timeout.QuadPart = -(500LL * 10000);
 		PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Process Message sent\n"));
     status = FltSendMessage(FilterHandle, &ClientPort, &msg, sizeof(msg), NULL, &replyLength, &timeout);
-    // if (NT_SUCCESS(status)) {
-    //   if (reply.IsTracked) {
-    //     PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Process replied: tracking process\n"));
-    //   } else {
-    //     PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Process replied: untracking process\n"));
-    //   }
-    // }
   }
+  ExReleaseRundownProtection(&g_RundownRef);
 }
 
 NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING RegistryPath) {
@@ -279,9 +280,10 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 	PSECURITY_DESCRIPTOR usageSd;
 
   InitializeListHead(&g_TrackedList);
+  ExInitializeRundownProtection(&g_RundownRef);
 
-	status  = FltBuildDefaultSecurityDescriptor(&sd, FLT_PORT_ALL_ACCESS);
-	status  = FltBuildDefaultSecurityDescriptor(&usageSd, FLT_PORT_ALL_ACCESS);
+	status = FltBuildDefaultSecurityDescriptor(&sd, FLT_PORT_ALL_ACCESS);
+	status = FltBuildDefaultSecurityDescriptor(&usageSd, FLT_PORT_ALL_ACCESS);
 	if (!NT_SUCCESS(status)) {
 		PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Build sd failed\n"));
 		return status;
@@ -318,8 +320,7 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
     return status;
   }
   PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Start filtering\n"));
-  
-  // status = RegisterNetworkCallout();
+
   RegisterNetworkCallout();
 
   return status;
@@ -327,20 +328,27 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 
 NTSTATUS DiskIoUnload(_In_ FLT_FILTER_UNLOAD_FLAGS Flags) {
 	UNREFERENCED_PARAMETER(Flags);
-	// PAGED_CODE();
+	PAGED_CODE();
+
+  PsSetCreateProcessNotifyRoutine(ProcessCreateCallback, TRUE);
+  ExWaitForRundownProtectionRelease(&g_RundownRef);
 
   UnregisterNetworkCallout();
-	if (ClientPort != NULL) {
+	if (ClientPort) {
 		FltCloseClientPort(FilterHandle, &ClientPort);
 		ClientPort = NULL;
 	}
-  if (UsageClientPort != NULL) {
+  if (UsageClientPort) {
     FltCloseClientPort(FilterHandle, &UsageClientPort);
     UsageClientPort = NULL;
   }
+  PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("Closed client port.\n"));
 	FltCloseCommunicationPort(ServerPort);
   FltCloseCommunicationPort(UsageServerPort);
+  PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("Closed server port.\n"));
 	FltUnregisterFilter(FilterHandle);
+  PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("Unregistered filter.\n"));
+
 	return STATUS_SUCCESS;
 }
 
