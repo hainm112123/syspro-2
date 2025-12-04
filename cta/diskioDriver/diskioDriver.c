@@ -48,6 +48,7 @@ LIST_ENTRY g_TrackedList;
 KSPIN_LOCK g_TrackedLock;
 ULONG g_TrackedCount;
 EX_RUNDOWN_REF g_RundownRef;
+PDEVICE_OBJECT g_DeviceObject = NULL;
 
 DRIVER_INITIALIZE DriverEntry;
 NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING RegistryPath);
@@ -276,6 +277,7 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 	OBJECT_ATTRIBUTES oa, usageOa;
 	UNICODE_STRING PortName = RTL_CONSTANT_STRING(L"\\DiskIoFilterPort");
 	UNICODE_STRING UsagePortName = RTL_CONSTANT_STRING(L"\\UsageDiskIoFilterPort");
+  UNICODE_STRING devName = RTL_CONSTANT_STRING(L"\\Device\\ProcessMonitoringFilter");
 	PSECURITY_DESCRIPTOR sd;
 	PSECURITY_DESCRIPTOR usageSd;
 
@@ -321,7 +323,18 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
   }
   PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Start filtering\n"));
 
-  RegisterNetworkCallout();
+  status = IoCreateDevice(DriverObject, 0, &devName, FILE_DEVICE_UNKNOWN, 0, FALSE, &g_DeviceObject);
+  if (!NT_SUCCESS(status)) {
+    PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Create device failed\n"));
+    return status;
+  }
+
+  if (!WfpKernelRegister(g_DeviceObject)) {
+    PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: WFP Kernel registration failed.\n"));
+  }
+  if (!WfpUserMain()) {
+    PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: WFP User registration failed.\n"));
+  }
 
   return status;
 }
@@ -333,7 +346,10 @@ NTSTATUS DiskIoUnload(_In_ FLT_FILTER_UNLOAD_FLAGS Flags) {
   PsSetCreateProcessNotifyRoutine(ProcessCreateCallback, TRUE);
   ExWaitForRundownProtectionRelease(&g_RundownRef);
 
-  UnregisterNetworkCallout();
+  if (!WfpUserExit()) {
+    PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: WFP User exit failed.\n"));
+  }
+  WfpKernelUnregister();
 	if (ClientPort) {
 		FltCloseClientPort(FilterHandle, &ClientPort);
 		ClientPort = NULL;
@@ -346,7 +362,9 @@ NTSTATUS DiskIoUnload(_In_ FLT_FILTER_UNLOAD_FLAGS Flags) {
 	FltCloseCommunicationPort(ServerPort);
   FltCloseCommunicationPort(UsageServerPort);
   PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("Closed server port.\n"));
+
 	FltUnregisterFilter(FilterHandle);
+  if (g_DeviceObject) IoDeleteDevice(g_DeviceObject);
   PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("Unregistered filter.\n"));
 
 	return STATUS_SUCCESS;

@@ -4,8 +4,10 @@
 
 #include <ntdef.h>
 
-BOOLEAN RegisterNetworkCallout();
-VOID UnregisterNetworkCallout();
+BOOLEAN WfpKernelRegister(PVOID devObj);
+VOID WfpKernelUnregister();
+BOOLEAN WfpUserMain();
+BOOLEAN WfpUserExit();
 
 #endif
 
