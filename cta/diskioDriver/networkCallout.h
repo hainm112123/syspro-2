@@ -15,7 +15,7 @@ BOOLEAN WfpKernelRegister(PVOID devObj);
 VOID WfpKernelUnregister();
 BOOLEAN WfpUserMain();
 BOOLEAN WfpUserExit();
-VOID UpdateTrackedListLock(PVOID _TrackedList, PVOID _TrackedLock);
+VOID UpdateNetworkStat(ULONG pid, ULONG64 bytes);
 
 #endif
 

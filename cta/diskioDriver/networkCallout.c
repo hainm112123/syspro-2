@@ -63,7 +63,7 @@ RTL_GENERIC_COMPARE_RESULTS NTAPI FlowCompare(RTL_AVL_TABLE* Table, PVOID FirstS
 
 PVOID NTAPI FlowAllocate(RTL_AVL_TABLE* Table, CLONG ByteSize) {
   UNREFERENCED_PARAMETER(Table);
-  return ExAllocatePoolZero(NonPagedPoolNx, ByteSize, 'lfWF');
+  return ExAllocatePool2(POOL_FLAG_NON_PAGED, ByteSize, 'lfWF');
 }
 
 VOID NTAPI FlowFree(RTL_AVL_TABLE* Table, PVOID Buffer) {
@@ -77,7 +77,7 @@ VOID InitializeFlowTable() {
 }
 
 NTSTATUS InsertFlow(UINT64 flowHandle, UINT64 pid) {
-  PFLOW_ENTRY entry = ExAllocatePoolZero(NonPagedPoolNx, sizeof(FLOW_ENTRY), 'lfWF');
+  PFLOW_ENTRY entry = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(FLOW_ENTRY), 'lfWF');
   if (!entry) return STATUS_INSUFFICIENT_RESOURCES;
 
   entry->flowHandle = flowHandle;
@@ -133,26 +133,6 @@ VOID CleanupFlowTable() {
   ExReleasePushLockExclusive(&g_FlowTableLock);
 }
 
-VOID UpdateTrackedListLock(PVOID _TrackedList, PVOID _TrackedLock) {
-  TrackedList = (PLIST_ENTRY)_TrackedList;
-  _TrackedLock = (PKSPIN_LOCK)_TrackedLock;
-}
-
-VOID UpdateNetworkStat(ULONG pid, ULONG64 bytes) {
-  KIRQL oldIrql;
-  KeAcquireSpinLock(TrackedLock, &oldIrql);
-
-  for (PLIST_ENTRY entry = TrackedList->Flink; entry != TrackedList; entry = entry->Flink) {
-    PPROCESS_STAT p = CONTAINING_RECORD(entry, PROCESS_STAT, ListEntry);
-    if (p->ProcessId == pid) {
-      p->NetBytes += bytes;
-      break;
-    }
-  }
-
-  KeReleaseSpinLock(TrackedLock, oldIrql);
-}
-
 VOID OnCalloutClassify(
   const FWPS_INCOMING_VALUES0* inFixedValues, const FWPS_INCOMING_METADATA_VALUES0* inMetaValues, 
   VOID* layerData, const FWPS_FILTER0* filter, UINT64 flowContext, FWPS_CLASSIFY_OUT0* classifyOut
@@ -168,7 +148,7 @@ VOID OnCalloutClassify(
     UINT64 flowHandle = inMetaValues->flowHandle;
     UINT64 pid = inMetaValues->processId;
     InsertFlow(flowHandle, pid);
-    DbgPrint("NetworkCallout: Insert FlowHandle: %u, ProcessId: %u", (ULONG)flowHandle, (ULONG)pid);
+    DbgPrint("NetworkCallout: Insert FlowHandle: %u, ProcessId: %u\n", (ULONG)flowHandle, (ULONG)pid);
   }
   if (inFixedValues->layerId == FWPS_LAYER_STREAM_V4 || inFixedValues->layerId == FWPS_LAYER_STREAM_V6) {
     UINT64 flowHandle = inMetaValues->flowHandle;
@@ -177,8 +157,8 @@ VOID OnCalloutClassify(
     ULONG64 bytes = 0;
     if (ioPacket->streamData) bytes += ioPacket->streamData->dataLength;
     if (entry) {
-      UpdateNetworkStat((ULONG)entry->processId, bytes);
-      DbgPrint("NetworkCallout: %u bytes through Flow FlowHandle: %u, ProcessId: %u", bytes, (ULONG)flowHandle, (ULONG)entry->processId);
+      if (bytes > 0) UpdateNetworkStat((ULONG)entry->processId, bytes);
+      DbgPrint("NetworkCallout: %u bytes through Flow FlowHandle: %u, ProcessId: %u\n", bytes, (ULONG)flowHandle, (ULONG)entry->processId);
     }
   }
 }

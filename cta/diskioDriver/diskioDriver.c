@@ -39,8 +39,8 @@ typedef struct _PROCESS_USAGE_LIST {
   PROCESS_USAGE_ENTRY Entries[1];
 } PROCESS_USAGE_LIST, *PPROCESS_USAGE_LIST;
 
-LIST_ENTRY g_TrackedList;
-KSPIN_LOCK g_TrackedLock;
+LIST_ENTRY g_TrackedList, g_NetTrackedList;
+KSPIN_LOCK g_TrackedLock, g_NetTrackedLock;
 ULONG g_TrackedCount;
 EX_RUNDOWN_REF g_RundownRef;
 PDEVICE_OBJECT g_DeviceObject = NULL;
@@ -125,8 +125,14 @@ VOID UntrackedProcess(ULONG pid) {
 }
 
 VOID UpdateStat(ULONG pid, ULONG64 bytes) {
-  KIRQL oldIrql;
-  KeAcquireSpinLock(&g_TrackedLock, &oldIrql);
+  KIRQL oldIrql = KeGetCurrentIrql();
+	BOOLEAN atDpc = (KeGetCurrentIrql() >= DISPATCH_LEVEL);
+	if (atDpc) {
+		UNREFERENCED_PARAMETER(oldIrql);
+		KeAcquireSpinLockAtDpcLevel(&g_TrackedLock);
+	} else {
+		KeAcquireSpinLock(&g_TrackedLock, &oldIrql);
+	}
 
   for (PLIST_ENTRY entry = g_TrackedList.Flink; entry != &g_TrackedList; entry = entry->Flink) {
     PPROCESS_STAT p = CONTAINING_RECORD(entry, PROCESS_STAT, ListEntry);
@@ -136,13 +142,43 @@ VOID UpdateStat(ULONG pid, ULONG64 bytes) {
     }
   }
 
-  KeReleaseSpinLock(&g_TrackedLock, oldIrql);
+	if (atDpc) {
+		KeReleaseSpinLockFromDpcLevel(&g_TrackedLock);
+	} else {
+		KeReleaseSpinLock(&g_TrackedLock, oldIrql);
+	}
+}
+
+VOID UpdateNetworkStat(ULONG pid, ULONG64 bytes) {
+  KIRQL oldIrql = KeGetCurrentIrql();
+	BOOLEAN atDpc = (KeGetCurrentIrql() >= DISPATCH_LEVEL);
+	if (atDpc) {
+		UNREFERENCED_PARAMETER(oldIrql);
+		KeAcquireSpinLockAtDpcLevel(&g_TrackedLock);
+	} else {
+		KeAcquireSpinLock(&g_TrackedLock, &oldIrql);
+	}
+
+  for (PLIST_ENTRY entry = g_TrackedList.Flink; entry != &g_TrackedList; entry = entry->Flink) {
+    PPROCESS_STAT p = CONTAINING_RECORD(entry, PROCESS_STAT, ListEntry);
+    if (p->ProcessId == pid) {
+      p->NetBytes += bytes;
+      break;
+    }
+  }
+
+	if (atDpc) {
+		KeReleaseSpinLockFromDpcLevel(&g_TrackedLock);
+	} else {
+		KeReleaseSpinLock(&g_TrackedLock, oldIrql);
+	}
 }
 
 VOID SendUsage(PVOID Context) {
-  UNREFERENCED_PARAMETER(Context);
+  PWORK_QUEUE_ITEM WorkItem = (PWORK_QUEUE_ITEM)Context;
+
   ULONG bufSize = sizeof(PROCESS_USAGE_LIST) + (g_TrackedCount - 1) * sizeof(PROCESS_USAGE_ENTRY);
-  PPROCESS_USAGE_LIST usage = ExAllocatePoolZero(NonPagedPoolNx, bufSize, 'uLsP');
+  PPROCESS_USAGE_LIST usage = ExAllocatePool2(POOL_FLAG_NON_PAGED, bufSize, 'uLsP');
   if (!usage) {
     ExReleaseRundownProtection(&g_RundownRef);
     return;
@@ -158,6 +194,7 @@ VOID SendUsage(PVOID Context) {
     usage->Entries[i].IoBytes = p->IoBytes;
     usage->Entries[i].NetBytes = p->NetBytes;
     p->IoBytes = 0;
+    p->NetBytes = 0;
     i ++;
   }
   KeReleaseSpinLock(&g_TrackedLock, oldIrql);
@@ -172,6 +209,7 @@ VOID SendUsage(PVOID Context) {
     PT_DBG_PRINT(PTDBG_TRACE_ROUTINES, ("DiskIoDriver: Send usage failed\n"));
   }
   ExReleaseRundownProtection(&g_RundownRef);
+  ExFreePoolWithTag(WorkItem, 'uQoW');
 }
 
 NTSTATUS ProcessPortConnect(PFLT_PORT _ClientPort, PVOID ServerPortCookie, PVOID ConnectionContext, ULONG SizeOfContext, PVOID* ConnectionCookie) {
@@ -209,7 +247,6 @@ NTSTATUS UsagePortConnect(PFLT_PORT _ClientPort, PVOID ServerPortCookie, PVOID C
 	UsageClientPort = _ClientPort;
   InitializeListHead(&g_TrackedList);
   KeInitializeSpinLock(&g_TrackedLock);
-  UpdateTrackedListLock(&g_TrackedList, &g_TrackedLock);
   g_TrackedCount = 0;
 	return STATUS_SUCCESS;
 }
@@ -240,10 +277,12 @@ NTSTATUS UsagePortMessage(PVOID ConnectionCookie, PVOID InputBuffer, ULONG Input
   } else if (request->type == TYPE_UNTRACK_PROCESS) {
     UntrackedProcess(request->ProcessId);
   } else {
-    WORK_QUEUE_ITEM WorkItem;
-    if (!ExAcquireRundownProtection(&g_RundownRef)) {
-      ExInitializeWorkItem(&WorkItem, SendUsage, NULL);
-      ExQueueWorkItem(&WorkItem, DelayedWorkQueue);
+    PWORK_QUEUE_ITEM WorkItem = ExAllocatePool2(POOL_FLAG_NON_PAGED, sizeof(WORK_QUEUE_ITEM), 'uQoW');
+    if (WorkItem && ExAcquireRundownProtection(&g_RundownRef)) {
+      ExInitializeWorkItem(WorkItem, SendUsage, WorkItem);
+      ExQueueWorkItem(WorkItem, DelayedWorkQueue);
+    } else {
+      if (WorkItem) ExFreePoolWithTag(WorkItem, 'uQoW');
     }
   }
 
@@ -281,7 +320,6 @@ NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING Regi
 
   InitializeListHead(&g_TrackedList);
   KeInitializeSpinLock(&g_TrackedLock);
-  UpdateTrackedListLock(&g_TrackedList, &g_TrackedLock);
   ExInitializeRundownProtection(&g_RundownRef);
 
 	status = FltBuildDefaultSecurityDescriptor(&sd, FLT_PORT_ALL_ACCESS);

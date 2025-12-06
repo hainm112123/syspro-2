@@ -51,3 +51,4 @@ stress_test.tmp
 *.etl
 x64
 *.i
+openWinDbg.bat
