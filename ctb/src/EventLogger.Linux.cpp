@@ -75,7 +75,7 @@ void EventLogger::getEvents() {
   while (count --) {
     uint32_t head = __atomic_load_n(&ring->head, __ATOMIC_RELAXED);
     uint32_t tail = __atomic_load_n(&ring->tail, __ATOMIC_ACQUIRE);
-    printf("Head: %d, Tail: %d\n", head, tail);
+    // printf("Head: %d, Tail: %d\n", head, tail);
     if (head == tail) {
       break;
     }
